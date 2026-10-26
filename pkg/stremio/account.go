@@ -240,3 +240,146 @@ func (a AccountAPI) Sync(ctx context.Context, state catalog.State, manifestURL s
 	}
 	return nil
 }
+
+type LibraryItemState struct {
+	LastWatched        string `json:"lastWatched"`
+	TimeWatched        int64  `json:"timeWatched"`
+	TimeOffset         int64  `json:"timeOffset"`
+	OverallTimeWatched int64  `json:"overallTimeWatched"`
+	TimesWatched       int    `json:"timesWatched"`
+	FlaggedWatched     int    `json:"flaggedWatched"`
+	Duration           int64  `json:"duration"`
+	VideoID            string `json:"video_id"`
+}
+
+type LibraryItemDetail struct {
+	ID     string           `json:"_id"`
+	Name   string           `json:"name"`
+	Type   string           `json:"type"`
+	Poster string           `json:"poster,omitempty"`
+	Year   string           `json:"year,omitempty"`
+	State  LibraryItemState `json:"state"`
+}
+
+type WatchedItem struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Type            string  `json:"type"`
+	Poster          string  `json:"poster,omitempty"`
+	Year            string  `json:"year,omitempty"`
+	LastWatched     string  `json:"last_watched,omitempty"`
+	TimesWatched    int     `json:"times_watched"`
+	ProgressPercent float64 `json:"progress_percent,omitempty"`
+	Completed       bool    `json:"completed"`
+}
+
+// GetWatchHistory retrieves recently watched library items via Stremio's Datastore API.
+func (a AccountAPI) GetWatchHistory(ctx context.Context, limit int, onlyCompleted bool) ([]WatchedItem, error) {
+	if a.AuthKey == "" {
+		return nil, errors.New("Stremio account is not linked")
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	raw, err := a.call(ctx, "DatastoreGet", map[string]any{"collection": "libraryItem"})
+	if err != nil {
+		return nil, err
+	}
+	var summaryList [][]json.RawMessage
+	if err := json.Unmarshal(raw, &summaryList); err != nil {
+		return nil, fmt.Errorf("unexpected datastore summary: %w", err)
+	}
+
+	type tuple struct {
+		id    string
+		mtime int64
+	}
+	var tuples []tuple
+	for _, entry := range summaryList {
+		if len(entry) < 2 {
+			continue
+		}
+		var id string
+		var mtime int64
+		if json.Unmarshal(entry[0], &id) == nil && json.Unmarshal(entry[1], &mtime) == nil {
+			if strings.HasPrefix(id, "tt") {
+				tuples = append(tuples, tuple{id: id, mtime: mtime})
+			}
+		}
+	}
+
+	// Sort tuples descending by timestamp (newest first)
+	for i := 0; i < len(tuples)-1; i++ {
+		for j := i + 1; j < len(tuples); j++ {
+			if tuples[j].mtime > tuples[i].mtime {
+				tuples[i], tuples[j] = tuples[j], tuples[i]
+			}
+		}
+	}
+
+	fetchCount := limit * 2
+	if fetchCount > len(tuples) {
+		fetchCount = len(tuples)
+	}
+	if fetchCount == 0 {
+		return []WatchedItem{}, nil
+	}
+
+	targetIDs := make([]string, fetchCount)
+	for i := 0; i < fetchCount; i++ {
+		targetIDs[i] = tuples[i].id
+	}
+
+	detailRaw, err := a.call(ctx, "DatastoreGet", map[string]any{
+		"collection": "libraryItem",
+		"ids":        targetIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var details []LibraryItemDetail
+	if err := json.Unmarshal(detailRaw, &details); err != nil {
+		return nil, fmt.Errorf("unexpected datastore details: %w", err)
+	}
+
+	idMap := make(map[string]LibraryItemDetail, len(details))
+	for _, d := range details {
+		idMap[d.ID] = d
+	}
+
+	var results []WatchedItem
+	for _, t := range targetIDs {
+		d, found := idMap[t]
+		if !found {
+			continue
+		}
+		completed := d.State.TimesWatched > 0 || d.State.FlaggedWatched > 0
+		var progress float64
+		if d.State.Duration > 0 {
+			progress = float64(d.State.TimeOffset) / float64(d.State.Duration) * 100
+			if progress >= 85.0 {
+				completed = true
+			}
+		}
+		if onlyCompleted && !completed {
+			continue
+		}
+		results = append(results, WatchedItem{
+			ID:              d.ID,
+			Name:            d.Name,
+			Type:            d.Type,
+			Poster:          d.Poster,
+			Year:            d.Year,
+			LastWatched:     d.State.LastWatched,
+			TimesWatched:    d.State.TimesWatched,
+			ProgressPercent: progress,
+			Completed:       completed,
+		})
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results, nil
+}

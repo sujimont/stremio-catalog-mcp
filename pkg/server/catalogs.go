@@ -9,22 +9,28 @@ import (
 )
 
 type CatalogsGetInput struct {
+	Profile           string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, suji, default)"`
 	RowID             string `json:"row_id,omitempty" jsonschema:"Optional catalog row ID; returns this row with its ordered titles and poster URLs"`
 	IncludeTitles     bool   `json:"include_titles,omitempty" jsonschema:"Include all titles and poster URLs when listing multiple rows; default is a compact summary"`
-	IncludeInstallURL bool   `json:"include_install_url,omitempty" jsonschema:"Include the private Stremio addon install URL, only when needed for setup or reinstall"`
+	IncludeInstallURL bool   `json:"include_install_url,omitempty" jsonschema:"Include the private Stremio/Nuvio addon install URL for this profile"`
+	IncludePruned     bool   `json:"include_pruned,omitempty" jsonschema:"Include archived/pruned watched titles"`
 }
 
 type CatalogSummary struct {
-	ID         string          `json:"id"`
-	Name       string          `json:"name"`
-	Type       string          `json:"type"`
-	Position   int             `json:"position"`
-	Visible    bool            `json:"visible"`
-	TitleCount int             `json:"title_count"`
-	Titles     *[]catalog.Item `json:"titles,omitempty"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Type         string          `json:"type"`
+	Position     int             `json:"position"`
+	Visible      bool            `json:"visible"`
+	TitleCount   int             `json:"title_count"`
+	Titles       *[]catalog.Item `json:"titles,omitempty"`
+	AutoPrune    bool            `json:"auto_prune,omitempty"`
+	PrunedCount  int             `json:"pruned_count"`
+	PrunedTitles *[]catalog.Item `json:"pruned_titles,omitempty"`
 }
 
 type CatalogsGetResult struct {
+	Profile    string           `json:"profile,omitempty"`
 	Revision   int64            `json:"revision"`
 	Rows       []CatalogSummary `json:"rows"`
 	InstallURL string           `json:"install_url,omitempty"`
@@ -32,18 +38,19 @@ type CatalogsGetResult struct {
 }
 
 func (rt Runtime) catalogsGet(ctx context.Context, input CatalogsGetInput) (CatalogsGetResult, error) {
-	result := CatalogsGetResult{Rows: []CatalogSummary{}}
+	if input.Profile != "" {
+		rt = rt.forProfile(input.Profile)
+	}
+	result := CatalogsGetResult{Profile: input.Profile, Rows: []CatalogSummary{}}
 	var err error
 	if input.IncludeInstallURL {
-		result.InstallURL, err = stremio.ManifestURL(rt.BaseURL, rt.FeedToken)
+		result.InstallURL, err = stremio.ProfileManifestURL(rt.BaseURL, rt.FeedToken, input.Profile)
 		if err != nil {
 			return CatalogsGetResult{}, err
 		}
 	}
 	state, err := rt.Manager.Read(ctx)
 	if err != nil {
-		// The former install_url tool was independent of Redis. Preserve that
-		// recovery path for installations whose storage is not yet configured.
 		if input.IncludeInstallURL && input.RowID == "" && !input.IncludeTitles {
 			result.Warning = "Catalog storage unavailable; the private installation URL is still valid. Rows were not fetched."
 			return result, nil
@@ -57,10 +64,23 @@ func (rt Runtime) catalogsGet(ctx context.Context, input CatalogsGetInput) (Cata
 			continue
 		}
 		matched = true
-		entry := CatalogSummary{ID: row.ID, Name: row.Name, Type: row.Type, Position: i, Visible: !row.Hidden, TitleCount: len(row.Items)}
+		entry := CatalogSummary{
+			ID:          row.ID,
+			Name:        row.Name,
+			Type:        row.Type,
+			Position:    i,
+			Visible:     !row.Hidden,
+			TitleCount:  len(row.Items),
+			AutoPrune:   row.AutoPrune,
+			PrunedCount: len(row.PrunedItems),
+		}
 		if input.IncludeTitles || input.RowID != "" {
 			items := append([]catalog.Item{}, row.Items...)
-			entry.Titles = &items // full saved title metadata, including posters
+			entry.Titles = &items
+		}
+		if input.IncludePruned {
+			pruned := append([]catalog.Item{}, row.PrunedItems...)
+			entry.PrunedTitles = &pruned
 		}
 		result.Rows = append(result.Rows, entry)
 	}
@@ -87,6 +107,9 @@ type CatalogsUpdateResult struct {
 }
 
 func (rt Runtime) catalogsUpdate(ctx context.Context, input catalog.BatchInput) (CatalogsUpdateResult, error) {
+	if input.Profile != "" {
+		rt = rt.forProfile(input.Profile)
+	}
 	batch, err := rt.Manager.ApplyBatch(ctx, input)
 	if err != nil {
 		return CatalogsUpdateResult{}, err

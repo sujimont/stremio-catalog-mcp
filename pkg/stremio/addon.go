@@ -53,7 +53,18 @@ func BuildManifest(state catalog.State) Manifest {
 	return manifest
 }
 
-func ManifestURL(baseURL, feedToken string, revisions ...int64) (string, error) {
+func NormalizeProfile(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	var clean strings.Builder
+	for _, r := range p {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			clean.WriteRune(r)
+		}
+	}
+	return clean.String()
+}
+
+func ProfileManifestURL(baseURL, feedToken, profile string, revisions ...int64) (string, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || feedToken == "" || strings.ContainsAny(feedToken, "/?# ") {
 		return "", errors.New("PUBLIC_BASE_URL must be https and STREMIO_FEED_TOKEN must be a URL-safe secret")
@@ -62,7 +73,15 @@ func ManifestURL(baseURL, feedToken string, revisions ...int64) (string, error) 
 	if len(revisions) != 0 {
 		version = fmt.Sprintf("/v%d", revisions[0])
 	}
-	return strings.TrimRight(u.String(), "/") + "/stremio/" + feedToken + version + "/manifest.json", nil
+	profile = NormalizeProfile(profile)
+	if profile == "" || profile == "default" {
+		return strings.TrimRight(u.String(), "/") + "/stremio/" + feedToken + version + "/manifest.json", nil
+	}
+	return strings.TrimRight(u.String(), "/") + "/stremio/" + feedToken + "/p/" + url.PathEscape(profile) + version + "/manifest.json", nil
+}
+
+func ManifestURL(baseURL, feedToken string, revisions ...int64) (string, error) {
+	return ProfileManifestURL(baseURL, feedToken, "", revisions...)
 }
 
 func EqualToken(want, got string) bool {
@@ -74,8 +93,9 @@ func EqualToken(want, got string) bool {
 }
 
 type Handler struct {
-	Manager   catalog.Manager
-	FeedToken string
+	Manager           catalog.Manager
+	ManagerForProfile func(profile string) catalog.Manager
+	FeedToken         string
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -95,26 +115,36 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Vercel rewrites map /stremio/... to /api/mcp with explicit parameters.
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	var token, resource, mediaType, id string
+	var token, resource, mediaType, id, profile string
 	if len(parts) >= 3 && parts[0] == "stremio" {
 		token = parts[1]
-		if (len(parts) == 4 || len(parts) == 6) && strings.HasPrefix(parts[2], "v") {
-			parts = append(parts[:2], parts[3:]...)
+		idx := 2
+		if len(parts) >= 4 && parts[2] == "p" {
+			profile = parts[3]
+			idx = 4
 		}
-		if len(parts) == 3 && parts[2] == "manifest.json" {
+		remaining := parts[idx:]
+		if len(remaining) >= 1 && strings.HasPrefix(remaining[0], "v") {
+			remaining = remaining[1:]
+		}
+		if len(remaining) == 1 && remaining[0] == "manifest.json" {
 			resource = "manifest"
-		} else if len(parts) == 5 && parts[2] == "catalog" && strings.HasSuffix(parts[4], ".json") {
-			resource, mediaType, id = "catalog", parts[3], strings.TrimSuffix(parts[4], ".json")
+		} else if len(remaining) == 3 && remaining[0] == "catalog" && strings.HasSuffix(remaining[2], ".json") {
+			resource, mediaType, id = "catalog", remaining[1], strings.TrimSuffix(remaining[2], ".json")
 		}
 	} else if len(parts) == 2 && parts[0] == "api" && (parts[1] == "stremio" || parts[1] == "mcp") {
 		q := r.URL.Query()
-		token, resource, mediaType, id = q.Get("token"), q.Get("resource"), q.Get("type"), q.Get("id")
+		token, resource, mediaType, id, profile = q.Get("token"), q.Get("resource"), q.Get("type"), q.Get("id"), q.Get("profile")
 	}
 	if !EqualToken(h.FeedToken, token) {
 		http.NotFound(w, r)
 		return
 	}
-	state, err := h.Manager.Read(r.Context())
+	mgr := h.Manager
+	if profile != "" && h.ManagerForProfile != nil {
+		mgr = h.ManagerForProfile(profile)
+	}
+	state, err := mgr.Read(r.Context())
 	if err != nil {
 		http.Error(w, "Catalog storage unavailable", http.StatusServiceUnavailable)
 		return

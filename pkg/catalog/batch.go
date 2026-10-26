@@ -27,18 +27,22 @@ type TitleMove struct {
 // Change describes one operation on the custom catalog collection.
 // The action selects the relevant fields; irrelevant fields are rejected.
 type Change struct {
-	Action         string       `json:"action" jsonschema:"create, edit, delete, or sync"`
-	RowID          string       `json:"row_id,omitempty" jsonschema:"Existing catalog ID from catalogs_get; required for edit and delete"`
-	Name           string       `json:"name,omitempty" jsonschema:"Catalog name on create, or optional new name on edit"`
-	Type           string       `json:"type,omitempty" jsonschema:"movie or series; required only for create"`
-	Titles         []ItemInput  `json:"titles,omitempty" jsonschema:"Initial titles for create, in display order"`
-	AddTitles      []ItemInput  `json:"add_titles,omitempty" jsonschema:"Add titles to an existing catalog; existing IDs get refreshed"`
-	RemoveTitleIDs []string     `json:"remove_title_ids,omitempty" jsonschema:"IMDb IDs to remove from an existing catalog"`
-	ReplaceTitles  *[]ItemInput `json:"replace_titles,omitempty" jsonschema:"Complete new ordered title list for edit; [] clears the catalog; omitting preserves titles"`
-	MoveTitles     []TitleMove  `json:"move_titles,omitempty" jsonschema:"Reposition existing titles by IMDb ID within this catalog"`
+	Action          string       `json:"action" jsonschema:"create, edit, delete, or sync"`
+	RowID           string       `json:"row_id,omitempty" jsonschema:"Existing catalog ID from catalogs_get; required for edit and delete"`
+	Name            string       `json:"name,omitempty" jsonschema:"Catalog name on create, or optional new name on edit"`
+	Type            string       `json:"type,omitempty" jsonschema:"movie or series; required only for create"`
+	Titles          []ItemInput  `json:"titles,omitempty" jsonschema:"Initial titles for create, in display order"`
+	AddTitles       []ItemInput  `json:"add_titles,omitempty" jsonschema:"Add titles to an existing catalog; existing IDs get refreshed"`
+	RemoveTitleIDs  []string     `json:"remove_title_ids,omitempty" jsonschema:"IMDb IDs to remove from an existing catalog"`
+	ReplaceTitles   *[]ItemInput `json:"replace_titles,omitempty" jsonschema:"Complete new ordered title list for edit; [] clears the catalog; omitting preserves titles"`
+	MoveTitles      []TitleMove  `json:"move_titles,omitempty" jsonschema:"Reposition existing titles by IMDb ID within this catalog"`
+	AutoPrune       *bool        `json:"auto_prune,omitempty" jsonschema:"Enable or disable automatic pruning of watched titles for this row"`
+	RestoreTitleIDs []string     `json:"restore_title_ids,omitempty" jsonschema:"IMDb IDs from pruned_items to restore back into this catalog"`
+	PruneTitleIDs   []string     `json:"prune_title_ids,omitempty" jsonschema:"IMDb IDs to move from active titles into the pruned_items archive"`
 }
 
 type BatchInput struct {
+	Profile          string   `json:"profile,omitempty" jsonschema:"Optional profile name (e.g. kids, suji, default)"`
 	Changes          []Change `json:"changes" jsonschema:"One or more catalog changes, applied together in order"`
 	DryRun           bool     `json:"dry_run,omitempty" jsonschema:"Validate and preview without saving anything"`
 	ExpectedRevision *int64   `json:"expected_revision,omitempty" jsonschema:"Optional revision from catalogs_get to reject edits against stale state"`
@@ -79,17 +83,17 @@ func validateChange(c Change) error {
 	if c.Action != "create" && c.Action != "edit" && c.Action != "delete" && c.Action != "sync" {
 		return fmt.Errorf("action must be create, edit, delete, or sync; received %q", c.Action)
 	}
-	if len(c.Titles)+len(c.AddTitles)+len(c.RemoveTitleIDs)+len(c.MoveTitles) > 200 {
+	if len(c.Titles)+len(c.AddTitles)+len(c.RemoveTitleIDs)+len(c.MoveTitles)+len(c.RestoreTitleIDs)+len(c.PruneTitleIDs) > 200 {
 		return errors.New("too many title edits in one change")
 	}
 	switch c.Action {
 	case "create":
-		if c.RowID != "" || !ValidName(c.Name) || !ValidType(c.Type) || len(c.AddTitles) != 0 || len(c.RemoveTitleIDs) != 0 || c.ReplaceTitles != nil || len(c.MoveTitles) != 0 {
-			return errors.New("create requires name and type (movie or series), with optional titles; other fields must be omitted")
+		if c.RowID != "" || !ValidName(c.Name) || !ValidType(c.Type) || len(c.AddTitles) != 0 || len(c.RemoveTitleIDs) != 0 || c.ReplaceTitles != nil || len(c.MoveTitles) != 0 || len(c.RestoreTitleIDs) != 0 || len(c.PruneTitleIDs) != 0 {
+			return errors.New("create requires name and type (movie or series), with optional titles and auto_prune; other fields must be omitted")
 		}
 	case "edit":
-		if c.RowID == "" || c.Type != "" || len(c.Titles) != 0 || (c.Name == "" && len(c.AddTitles) == 0 && len(c.RemoveTitleIDs) == 0 && c.ReplaceTitles == nil && len(c.MoveTitles) == 0) {
-			return errors.New("edit requires row_id and at least one of name, add_titles, remove_title_ids, replace_titles, move_titles; omit type")
+		if c.RowID == "" || c.Type != "" || len(c.Titles) != 0 || (c.Name == "" && len(c.AddTitles) == 0 && len(c.RemoveTitleIDs) == 0 && c.ReplaceTitles == nil && len(c.MoveTitles) == 0 && c.AutoPrune == nil && len(c.RestoreTitleIDs) == 0 && len(c.PruneTitleIDs) == 0) {
+			return errors.New("edit requires row_id and at least one of name, add_titles, remove_title_ids, replace_titles, move_titles, auto_prune, restore_title_ids, prune_title_ids; omit type")
 		}
 		if c.Name != "" && !ValidName(c.Name) {
 			return errors.New("catalog name must be 1–80 characters and single-line")
@@ -98,13 +102,23 @@ func validateChange(c Change) error {
 			return errors.New("replace_titles cannot be combined with add_titles or remove_title_ids; it already defines the entire title list")
 		}
 	case "delete", "sync":
-		if c.Name != "" || c.Type != "" || len(c.Titles) != 0 || len(c.AddTitles) != 0 || len(c.RemoveTitleIDs) != 0 || c.ReplaceTitles != nil || len(c.MoveTitles) != 0 || (c.Action == "delete" && c.RowID == "") || (c.Action == "sync" && c.RowID != "") {
+		if c.Name != "" || c.Type != "" || len(c.Titles) != 0 || len(c.AddTitles) != 0 || len(c.RemoveTitleIDs) != 0 || c.ReplaceTitles != nil || len(c.MoveTitles) != 0 || len(c.RestoreTitleIDs) != 0 || len(c.PruneTitleIDs) != 0 || c.AutoPrune != nil || (c.Action == "delete" && c.RowID == "") || (c.Action == "sync" && c.RowID != "") {
 			return fmt.Errorf("%s accepts only %s", c.Action, map[bool]string{true: "row_id", false: "action"}[c.Action == "delete"])
 		}
 	}
 	for _, id := range c.RemoveTitleIDs {
 		if !ValidIMDbID(id) {
 			return fmt.Errorf("invalid remove_title_ids IMDb ID %q", id)
+		}
+	}
+	for _, id := range c.RestoreTitleIDs {
+		if !ValidIMDbID(id) {
+			return fmt.Errorf("invalid restore_title_ids IMDb ID %q", id)
+		}
+	}
+	for _, id := range c.PruneTitleIDs {
+		if !ValidIMDbID(id) {
+			return fmt.Errorf("invalid prune_title_ids IMDb ID %q", id)
 		}
 	}
 	for _, move := range c.MoveTitles {
@@ -346,7 +360,17 @@ func (m Manager) ApplyBatch(ctx context.Context, in BatchInput) (BatchResult, er
 			id := change.RowID
 			if change.Action == "create" {
 				id = createdIDs[i]
-				updated.Rows = append(updated.Rows, Row{ID: id, Name: strings.TrimSpace(change.Name), Type: change.Type, Items: append([]Item{}, resolved[i]...)})
+				autoPrune := false
+				if change.AutoPrune != nil {
+					autoPrune = *change.AutoPrune
+				}
+				updated.Rows = append(updated.Rows, Row{
+					ID:        id,
+					Name:      strings.TrimSpace(change.Name),
+					Type:      change.Type,
+					Items:     append([]Item{}, resolved[i]...),
+					AutoPrune: autoPrune,
+				})
 				requiresSync = true
 			} else {
 				index, err := rowIndex(&updated, id)
@@ -358,6 +382,39 @@ func (m Manager) ApplyBatch(ctx context.Context, in BatchInput) (BatchResult, er
 					requiresSync = true
 				} else {
 					row := &updated.Rows[index]
+					if change.AutoPrune != nil {
+						row.AutoPrune = *change.AutoPrune
+					}
+					if len(change.RestoreTitleIDs) > 0 {
+						restoreMap := map[string]bool{}
+						for _, rID := range change.RestoreTitleIDs {
+							restoreMap[rID] = true
+						}
+						var keptPruned []Item
+						for _, pItem := range row.PrunedItems {
+							if restoreMap[pItem.ID] {
+								row.Items = append(row.Items, pItem)
+							} else {
+								keptPruned = append(keptPruned, pItem)
+							}
+						}
+						row.PrunedItems = keptPruned
+					}
+					if len(change.PruneTitleIDs) > 0 {
+						pruneMap := map[string]bool{}
+						for _, pID := range change.PruneTitleIDs {
+							pruneMap[pID] = true
+						}
+						var keptItems []Item
+						for _, item := range row.Items {
+							if pruneMap[item.ID] {
+								row.PrunedItems = append(row.PrunedItems, item)
+							} else {
+								keptItems = append(keptItems, item)
+							}
+						}
+						row.Items = keptItems
+					}
 					if change.Name != "" && row.Name != strings.TrimSpace(change.Name) {
 						row.Name = strings.TrimSpace(change.Name)
 						requiresSync = true

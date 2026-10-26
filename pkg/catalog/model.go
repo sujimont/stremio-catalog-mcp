@@ -33,6 +33,10 @@ type Row struct {
 	Items []Item `json:"items"`
 	// Hidden removes the row from our published manifest without deleting its contents.
 	Hidden bool `json:"hidden,omitempty"`
+	// AutoPrune enables automatic archiving of watched titles when synced.
+	AutoPrune bool `json:"auto_prune,omitempty"`
+	// PrunedItems retains watched titles in a reversible archive.
+	PrunedItems []Item `json:"pruned_items,omitempty"`
 }
 
 type State struct {
