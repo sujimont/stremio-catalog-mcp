@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,10 +33,25 @@ type torrentioStream struct {
 	Name     string `json:"name"`
 	Title    string `json:"title"`
 	InfoHash string `json:"infoHash"`
+	URL      string `json:"url"`
 }
 
 type torrentioResponse struct {
 	Streams []torrentioStream `json:"streams"`
+}
+
+var hex40Regex = regexp.MustCompile(`(?i)\b([0-9a-f]{40})\b`)
+
+func extractHash(s torrentioStream) string {
+	if s.InfoHash != "" {
+		return s.InfoHash
+	}
+	if s.URL != "" {
+		if match := hex40Regex.FindString(s.URL); match != "" {
+			return match
+		}
+	}
+	return ""
 }
 
 // CrawlAndIngest executes the autonomous 2-tier search:
@@ -80,12 +96,15 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 				if len(data.Streams) > 0 {
 					var hashes []string
 					cachedMap := make(map[string]bool)
-					for _, s := range data.Streams {
-						if strings.Contains(s.Name, "[TB+]") && s.InfoHash != "" {
-							cachedMap[strings.ToLower(s.InfoHash)] = true
-						}
-						if s.InfoHash != "" {
-							hashes = append(hashes, s.InfoHash)
+					for i := range data.Streams {
+						s := &data.Streams[i]
+						h := extractHash(*s)
+						if h != "" {
+							s.InfoHash = h
+							if strings.Contains(s.Name, "[TB+]") {
+								cachedMap[strings.ToLower(h)] = true
+							}
+							hashes = append(hashes, h)
 						}
 					}
 
@@ -97,7 +116,9 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 
 					// Find the best stream: cached first, then 4k/1080p, then highest seeders
 					bestStream := pickBestStream(data.Streams, cachedMap)
-					if bestStream.InfoHash != "" {
+					bestHash := extractHash(bestStream)
+					if bestHash != "" {
+						bestStream.InfoHash = bestHash
 						cleanTitle := extractStreamName(bestStream.Title)
 						if cleanTitle == "" {
 							cleanTitle = title
@@ -125,6 +146,7 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 							Title:        cleanTitle,
 							Quality:      quality,
 							MagnetURI:    magnet,
+							StreamURL:    bestStream.URL,
 							TorboxCached: isCached,
 						}
 

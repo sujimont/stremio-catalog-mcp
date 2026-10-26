@@ -29,6 +29,21 @@ type torrentioStream struct {
 	Name     string `json:"name"`
 	Title    string `json:"title"`
 	InfoHash string `json:"infoHash"`
+	URL      string `json:"url"`
+}
+
+var hex40Regex = regexp.MustCompile(`(?i)\b([0-9a-f]{40})\b`)
+
+func extractStreamHash(s torrentioStream) string {
+	if s.InfoHash != "" {
+		return s.InfoHash
+	}
+	if s.URL != "" {
+		if match := hex40Regex.FindString(s.URL); match != "" {
+			return match
+		}
+	}
+	return ""
 }
 
 type torrentioResponse struct {
@@ -113,8 +128,8 @@ func CheckAvailability(ctx context.Context, mediaType, imdbID, torboxKey, stream
 			bestTitle = strings.TrimSpace(firstLine)
 		}
 
-		if s.InfoHash != "" && len(hashes) < 15 {
-			hashes = append(hashes, s.InfoHash)
+		if h := extractStreamHash(s); h != "" && len(hashes) < 15 {
+			hashes = append(hashes, h)
 		}
 	}
 
