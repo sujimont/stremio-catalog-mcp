@@ -151,23 +151,27 @@ func (r *Registry) Find(ctx context.Context, query string) (*DeviceConfig, error
 	// 1. Exact alias match
 	for _, d := range list {
 		if d.Alias == query {
-			return &d, nil
+			match := d
+			return &match, nil
 		}
 	}
 
 	// 2. Contains match (e.g. "living" matches "living_room", "bed" matches "bedroom")
 	for _, d := range list {
 		if strings.Contains(d.Alias, query) || strings.Contains(query, d.Alias) {
-			return &d, nil
+			match := d
+			return &match, nil
 		}
 		nameNorm := normalizeAlias(d.Name)
 		if strings.Contains(nameNorm, query) || strings.Contains(query, nameNorm) {
-			return &d, nil
+			match := d
+			return &match, nil
 		}
 	}
 
 	if len(list) > 0 {
-		return &list[0], nil // Default to first TV if specified query not strictly matched
+		def := list[0]
+		return &def, nil // Default to first TV if specified query not strictly matched
 	}
 
 	return nil, fmt.Errorf("no TV devices configured")
@@ -237,6 +241,6 @@ func (r *Registry) saveToRedis(ctx context.Context, devices []DeviceConfig) erro
 	}
 	defer resp.Body.Close()
 
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
