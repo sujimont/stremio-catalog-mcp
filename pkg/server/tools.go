@@ -147,9 +147,11 @@ type WatchHistoryResult struct {
 }
 
 type StreamAvailabilityInput struct {
-	IMDbID       string `json:"imdb_id" jsonschema:"IMDb ID (e.g. tt1375666)"`
-	MediaType    string `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
-	TorboxAPIKey string `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override to verify instant cloud caching"`
+	IMDbID       string   `json:"imdb_id,omitempty" jsonschema:"Single IMDb ID (e.g. tt1375666)"`
+	IMDbIDs      []string `json:"imdb_ids,omitempty" jsonschema:"Optional list of up to 50 IMDb IDs to batch-check all at once in parallel"`
+	Title        string   `json:"title,omitempty" jsonschema:"Optional title to verify stream filename match"`
+	MediaType    string   `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	TorboxAPIKey string   `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override to verify instant cloud caching"`
 }
 
 type TMDBDiscoverInput struct {
@@ -281,7 +283,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 6: stream_availability_check
-	mcp.AddTool(s, catalogTool("stream_availability_check", "⚡ Stream Availability Pre-Checker: verify active stream count, highest quality (4K/1080p/720p), max seeders, and instant TorBox cloud-cached status for any movie or series before adding to a catalog."),
+	mcp.AddTool(s, catalogTool("stream_availability_check", "⚡ Stream Availability Pre-Checker: verify active stream count, highest quality (4K/1080p/720p), max seeders, and instant TorBox cloud-cached status for any movie or series before adding to a catalog. Supports single imdb_id or batch imdb_ids up to 50 titles at once."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input StreamAvailabilityInput) (*mcp.CallToolResult, streams.StreamAvailabilityResult, error) {
 			torboxKey := input.TorboxAPIKey
 			if torboxKey == "" {
@@ -291,7 +293,11 @@ func serverFor(rt Runtime) *mcp.Server {
 			if torboxKey == "" && discoveredTBKey != "" {
 				torboxKey = discoveredTBKey
 			}
-			result, err := streams.CheckAvailability(ctx, input.MediaType, input.IMDbID, torboxKey, streamBase)
+			if len(input.IMDbIDs) > 0 {
+				result, err := streams.CheckBatchAvailability(ctx, input.MediaType, input.IMDbIDs, torboxKey, streamBase)
+				return nil, result, err
+			}
+			result, err := streams.CheckAvailability(ctx, input.MediaType, input.IMDbID, input.Title, torboxKey, streamBase)
 			return nil, result, err
 		})
 
