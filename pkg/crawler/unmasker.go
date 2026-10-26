@@ -59,6 +59,14 @@ func UnpackJS(packed string) string {
 
 // UnmaskStream resolves a masked streaming webpage or embed link to a raw playable video URL.
 func UnmaskStream(ctx context.Context, client *http.Client, pageURL string) (*UnmaskResult, error) {
+	cleanP := strings.ToLower(pageURL)
+	if strings.Contains(cleanP, ".m3u8") {
+		return &UnmaskResult{OriginalURL: pageURL, UnmaskedURL: pageURL, StreamType: "hls"}, nil
+	}
+	if strings.Contains(cleanP, ".mp4") {
+		return &UnmaskResult{OriginalURL: pageURL, UnmaskedURL: pageURL, StreamType: "mp4"}, nil
+	}
+
 	if client == nil {
 		client = &http.Client{
 			Timeout: 12 * time.Second,
@@ -86,6 +94,13 @@ func UnmaskStream(ctx context.Context, client *http.Client, pageURL string) (*Un
 	defer resp.Body.Close()
 
 	finalURL := resp.Request.URL.String()
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "mpegurl") || strings.Contains(contentType, "hls") {
+		return &UnmaskResult{OriginalURL: pageURL, UnmaskedURL: finalURL, StreamType: "hls"}, nil
+	}
+	if strings.Contains(contentType, "video/") || strings.Contains(contentType, "mp4") {
+		return &UnmaskResult{OriginalURL: pageURL, UnmaskedURL: finalURL, StreamType: "mp4"}, nil
+	}
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
