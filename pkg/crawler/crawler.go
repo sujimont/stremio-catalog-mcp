@@ -160,8 +160,8 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 						}
 					}
 
-					// Find the best stream: filtered by max size (default 10GB), cached first, then 4k/1080p, standalone
-					bestStream, bestSize, smallestSize := pickBestStream(data.Streams, cachedMap, maxSizeGB)
+					// Find the best stream: filtered by max size (default 10GB), title match, cached first, then 4k/1080p, standalone
+					bestStream, bestSize, smallestSize := pickBestStream(data.Streams, cachedMap, maxSizeGB, title)
 					bestHash := extractHash(bestStream)
 					if bestHash != "" {
 						bestStream.InfoHash = bestHash
@@ -274,10 +274,23 @@ func resolveIMDbFromCinemeta(ctx context.Context, client *http.Client, mediaType
 
 func isPack(s torrentioStream) bool {
 	lower := strings.ToLower(s.Name + " " + s.Title)
-	return strings.Contains(lower, "pack") || strings.Contains(lower, "collection") || strings.Contains(lower, "boxset") || strings.Contains(lower, "movies")
+	return strings.Contains(lower, "pack") || strings.Contains(lower, "collection") || strings.Contains(lower, "boxset") || strings.Contains(lower, "movies") || strings.Contains(lower, "1-4") || strings.Contains(lower, "1-5") || strings.Contains(lower, "complete")
 }
 
-func pickBestStream(streams []torrentioStream, cachedMap map[string]bool, maxSizeGB float64) (torrentioStream, float64, float64) {
+func matchesTitle(s torrentioStream, title string) bool {
+	if title == "" {
+		return true
+	}
+	clean := strings.ToLower(strings.TrimSpace(title))
+	words := strings.Fields(clean)
+	if len(words) == 0 {
+		return true
+	}
+	content := strings.ToLower(s.Name + " " + s.Title)
+	return strings.Contains(content, words[0])
+}
+
+func pickBestStream(streams []torrentioStream, cachedMap map[string]bool, maxSizeGB float64, expectedTitle string) (torrentioStream, float64, float64) {
 	if len(streams) == 0 {
 		return torrentioStream{}, 0, 0
 	}
@@ -288,6 +301,7 @@ func pickBestStream(streams []torrentioStream, cachedMap map[string]bool, maxSiz
 		quality string
 		cached  bool
 		isPack  bool
+		matched bool
 	}
 
 	var candidates []streamInfo
@@ -295,7 +309,8 @@ func pickBestStream(streams []torrentioStream, cachedMap map[string]bool, maxSiz
 
 	for _, s := range streams {
 		size := parseFileSizeGB(s.Title)
-		if size > 0 && (smallestSize == 0 || size < smallestSize) {
+		matched := matchesTitle(s, expectedTitle)
+		if matched && size > 0 && (smallestSize == 0 || size < smallestSize) {
 			smallestSize = size
 		}
 		cached := cachedMap != nil && cachedMap[strings.ToLower(s.InfoHash)]
@@ -305,12 +320,16 @@ func pickBestStream(streams []torrentioStream, cachedMap map[string]bool, maxSiz
 			quality: detectQuality(s.Name + " " + s.Title),
 			cached:  cached,
 			isPack:  isPack(s),
+			matched: matched,
 		})
 	}
 
-	// Filter by maxSizeGB: if maxSizeGB > 0 and size > maxSizeGB, exclude
+	// Filter by maxSizeGB and title relevance:
 	var allowed []streamInfo
 	for _, c := range candidates {
+		if !c.matched {
+			continue
+		}
 		if maxSizeGB > 0 && c.sizeGB > 0 && c.sizeGB > maxSizeGB {
 			continue
 		}
