@@ -33,13 +33,22 @@ func TestMCPToolAnnotations(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Result.Tools) != 5 {
-		t.Fatalf("expected exactly 5 tools, received %d", len(response.Result.Tools))
+	if len(response.Result.Tools) != 12 {
+		t.Fatalf("expected exactly 12 tools, received %d", len(response.Result.Tools))
 	}
 	expected := map[string]bool{
-		"catalogs_get": true, "catalogs_update": true,
-		"home_layout_get": true, "home_layout_update": true,
-		"watch_history_get": true,
+		"catalogs_get":              true,
+		"catalogs_update":           true,
+		"home_layout_get":           true,
+		"home_layout_update":        true,
+		"watch_history_get":         true,
+		"stream_availability_check": true,
+		"tmdb_discover":             true,
+		"tmdb_similar":              true,
+		"media_crawl_and_ingest":    true,
+		"stream_unmask":             true,
+		"play_on_tv":                true,
+		"addons_manage":             true,
 	}
 	for _, tool := range response.Result.Tools {
 		if !expected[tool.Name] {

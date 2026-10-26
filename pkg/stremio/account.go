@@ -383,3 +383,183 @@ func (a AccountAPI) GetWatchHistory(ctx context.Context, limit int, onlyComplete
 
 	return results, nil
 }
+
+type InstalledAddonInfo struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Version      string   `json:"version"`
+	Description  string   `json:"description,omitempty"`
+	TransportURL string   `json:"transport_url"`
+	Types        []string `json:"types,omitempty"`
+	Protected    bool     `json:"protected"`
+}
+
+// ListInstalledAddons returns a user-friendly summary of all installed addons.
+func (a AccountAPI) ListInstalledAddons(ctx context.Context) ([]InstalledAddonInfo, error) {
+	addons, err := a.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []InstalledAddonInfo
+	for _, entry := range addons {
+		var m struct {
+			ID          string   `json:"id"`
+			Name        string   `json:"name"`
+			Version     string   `json:"version"`
+			Description string   `json:"description"`
+			Types       []string `json:"types"`
+		}
+		_ = json.Unmarshal(entry.Manifest, &m)
+
+		var flags struct {
+			Official  bool `json:"official"`
+			Protected bool `json:"protected"`
+		}
+		_ = json.Unmarshal(entry.Flags, &flags)
+
+		results = append(results, InstalledAddonInfo{
+			ID:           m.ID,
+			Name:         m.Name,
+			Version:      m.Version,
+			Description:  m.Description,
+			TransportURL: entry.TransportURL,
+			Types:        m.Types,
+			Protected:    flags.Protected,
+		})
+	}
+	return results, nil
+}
+
+// InstallAddon fetches the addon's remote manifest and installs it in the Stremio account.
+func (a AccountAPI) InstallAddon(ctx context.Context, manifestURL string) (*InstalledAddonInfo, error) {
+	manifestURL = strings.TrimSpace(manifestURL)
+	if strings.HasPrefix(manifestURL, "stremio://") {
+		manifestURL = "https://" + strings.TrimPrefix(manifestURL, "stremio://")
+	}
+	if !strings.HasPrefix(manifestURL, "http://") && !strings.HasPrefix(manifestURL, "https://") {
+		return nil, fmt.Errorf("invalid manifest URL %q (must be http or https)", manifestURL)
+	}
+
+	client := a.Client
+	if client == nil {
+		client = &http.Client{Timeout: 8 * time.Second}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch addon manifest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("addon server returned HTTP %d", resp.StatusCode)
+	}
+
+	manifestBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+
+	var m struct {
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Version     string   `json:"version"`
+		Description string   `json:"description"`
+		Types       []string `json:"types"`
+	}
+	if err := json.Unmarshal(manifestBytes, &m); err != nil || m.ID == "" {
+		return nil, fmt.Errorf("invalid Stremio manifest at %s", manifestURL)
+	}
+
+	current, err := a.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	newDesc := Descriptor{
+		Manifest:      manifestBytes,
+		TransportURL:  manifestURL,
+		TransportName: "http",
+		Flags:         json.RawMessage(`{"official":false,"protected":false}`),
+	}
+
+	updated := make([]Descriptor, 0, len(current)+1)
+	replaced := false
+	for _, entry := range current {
+		if descriptorID(entry) == m.ID {
+			updated = append(updated, newDesc)
+			replaced = true
+		} else {
+			updated = append(updated, entry)
+		}
+	}
+	if !replaced {
+		updated = append(updated, newDesc)
+	}
+
+	if a.BeforeReplace != nil {
+		if err := a.BeforeReplace(ctx, current); err != nil {
+			return nil, fmt.Errorf("backup failed: %w", err)
+		}
+	}
+
+	if err := a.Set(ctx, updated); err != nil {
+		return nil, fmt.Errorf("failed to update Stremio account: %w", err)
+	}
+
+	return &InstalledAddonInfo{
+		ID:           m.ID,
+		Name:         m.Name,
+		Version:      m.Version,
+		Description:  m.Description,
+		TransportURL: manifestURL,
+		Types:        m.Types,
+	}, nil
+}
+
+// UninstallAddon removes an addon from the Stremio account by ID or TransportURL.
+func (a AccountAPI) UninstallAddon(ctx context.Context, addonIDOrURL string) error {
+	addonIDOrURL = strings.TrimSpace(addonIDOrURL)
+	if addonIDOrURL == "com.linvo.cinemeta" {
+		return fmt.Errorf("refusing to uninstall Cinemeta (required default catalog)")
+	}
+
+	current, err := a.Get(ctx)
+	if err != nil {
+		return err
+	}
+
+	var remaining []Descriptor
+	removed := false
+
+	for _, entry := range current {
+		id := descriptorID(entry)
+		if id == addonIDOrURL || entry.TransportURL == addonIDOrURL {
+			removed = true
+			continue
+		}
+		remaining = append(remaining, entry)
+	}
+
+	if !removed {
+		return fmt.Errorf("addon %q is not installed in your Stremio account", addonIDOrURL)
+	}
+
+	if len(remaining) == 0 {
+		return fmt.Errorf("refusing to empty addon collection")
+	}
+
+	if a.BeforeReplace != nil {
+		if err := a.BeforeReplace(ctx, current); err != nil {
+			return fmt.Errorf("backup failed: %w", err)
+		}
+	}
+
+	return a.Set(ctx, remaining)
+}
+
