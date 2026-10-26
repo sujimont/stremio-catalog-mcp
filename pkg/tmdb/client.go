@@ -265,6 +265,10 @@ func (c *Client) FindByIMDbID(ctx context.Context, imdbID string) (int, string, 
 
 // Discover finds movies or TV shows based on regional language, genres, providers, etc.
 func (c *Client) Discover(ctx context.Context, opts DiscoverOptions) ([]Item, error) {
+	if c.APIKey == "" {
+		return c.discoverCinemeta(ctx, opts)
+	}
+
 	endpoint := "/discover/movie"
 	isTV := opts.MediaType == "series" || opts.MediaType == "tv"
 	if isTV {
@@ -326,6 +330,10 @@ func (c *Client) Discover(ctx context.Context, opts DiscoverOptions) ([]Item, er
 
 // Similar finds titles similar or recommended for an IMDb ID or Title.
 func (c *Client) Similar(ctx context.Context, opts SimilarOptions) ([]Item, error) {
+	if c.APIKey == "" {
+		return c.similarCinemeta(ctx, opts)
+	}
+
 	isTV := opts.MediaType == "series" || opts.MediaType == "tv"
 	mediaTypeStr := "movie"
 	if isTV {
@@ -454,4 +462,147 @@ func (c *Client) enrichWithIMDb(ctx context.Context, isTV bool, results []MovieR
 	}
 
 	return valid, nil
+}
+
+func (c *Client) discoverCinemeta(ctx context.Context, opts DiscoverOptions) ([]Item, error) {
+	mediaType := opts.MediaType
+	if mediaType == "" {
+		mediaType = "movie"
+	}
+	if mediaType == "tv" {
+		mediaType = "series"
+	}
+
+	u := fmt.Sprintf("https://v3-cinemeta.strem.io/catalog/%s/top.json", mediaType)
+	if opts.Genre != "" {
+		u = fmt.Sprintf("https://v3-cinemeta.strem.io/catalog/%s/top/genre=%s.json", mediaType, url.PathEscape(opts.Genre))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Metas []struct {
+			ID          string `json:"id"`
+			IMDbID      string `json:"imdb_id"`
+			Name        string `json:"name"`
+			Type        string `json:"type"`
+			Poster      string `json:"poster"`
+			ReleaseInfo string `json:"releaseInfo"`
+			Description string `json:"description"`
+			IMDbRating  string `json:"imdbRating"`
+		} `json:"metas"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+
+	limit := opts.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	var items []Item
+	for _, m := range data.Metas {
+		id := m.IMDbID
+		if id == "" {
+			id = m.ID
+		}
+		if !strings.HasPrefix(id, "tt") {
+			continue
+		}
+		year := 0
+		if len(m.ReleaseInfo) >= 4 {
+			year, _ = strconv.Atoi(m.ReleaseInfo[:4])
+		}
+		if opts.Year > 0 && year > 0 && year != opts.Year {
+			continue
+		}
+
+		rating, _ := strconv.ParseFloat(m.IMDbRating, 64)
+		if opts.MinRating > 0 && rating > 0 && rating < opts.MinRating {
+			continue
+		}
+
+		mType := m.Type
+		if mType == "" {
+			mType = mediaType
+		}
+
+		items = append(items, Item{
+			IMDbID:   id,
+			Title:    m.Name,
+			Type:     mType,
+			Year:     year,
+			Rating:   rating,
+			Overview: m.Description,
+			Poster:   m.Poster,
+		})
+
+		if len(items) >= limit {
+			break
+		}
+	}
+
+	return items, nil
+}
+
+func (c *Client) similarCinemeta(ctx context.Context, opts SimilarOptions) ([]Item, error) {
+	mediaType := opts.MediaType
+	if mediaType == "" {
+		mediaType = "movie"
+	}
+	if mediaType == "tv" {
+		mediaType = "series"
+	}
+
+	genre := "Drama"
+	query := opts.Title
+	if query == "" && opts.IMDbID != "" {
+		metaURL := fmt.Sprintf("https://v3-cinemeta.strem.io/meta/%s/%s.json", mediaType, opts.IMDbID)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, metaURL, nil)
+		if resp, err := c.HTTP.Do(req); err == nil && resp.StatusCode == http.StatusOK {
+			var res struct {
+				Meta struct {
+					Genres []string `json:"genres"`
+				} `json:"meta"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&res)
+			_ = resp.Body.Close()
+			if len(res.Meta.Genres) > 0 {
+				genre = res.Meta.Genres[0]
+			}
+		}
+	} else if query != "" {
+		searchURL := fmt.Sprintf("https://v3-cinemeta.strem.io/catalog/%s/top/search=%s.json", mediaType, url.PathEscape(query))
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+		if resp, err := c.HTTP.Do(req); err == nil && resp.StatusCode == http.StatusOK {
+			var res struct {
+				Metas []struct {
+					Genres []string `json:"genres"`
+				} `json:"metas"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&res)
+			_ = resp.Body.Close()
+			if len(res.Metas) > 0 && len(res.Metas[0].Genres) > 0 {
+				genre = res.Metas[0].Genres[0]
+			}
+		}
+	}
+
+	return c.discoverCinemeta(ctx, DiscoverOptions{
+		MediaType: mediaType,
+		Genre:     genre,
+		Limit:     opts.Limit,
+	})
 }

@@ -317,7 +317,11 @@ func serverFor(rt Runtime) *mcp.Server {
 			if err != nil {
 				return nil, TMDBDiscoverResult{}, err
 			}
-			return nil, TMDBDiscoverResult{Items: items, Count: len(items)}, nil
+			msg := fmt.Sprintf("Found %d titles matching discovery criteria.", len(items))
+			if apiKey == "" {
+				msg += " (Retrieved via Cinemeta catalog. Configure TMDB_API_KEY in Vercel to enable regional languages and OTT filters)."
+			}
+			return nil, TMDBDiscoverResult{Items: items, Count: len(items), Message: msg}, nil
 		})
 
 	// Tool 8: tmdb_similar
@@ -337,7 +341,8 @@ func serverFor(rt Runtime) *mcp.Server {
 			if err != nil {
 				return nil, TMDBSimilarResult{}, err
 			}
-			return nil, TMDBSimilarResult{Items: items, Count: len(items)}, nil
+			msg := fmt.Sprintf("Found %d similar titles.", len(items))
+			return nil, TMDBSimilarResult{Items: items, Count: len(items), Message: msg}, nil
 		})
 
 	// Tool 9: media_crawl_and_ingest
