@@ -16,18 +16,31 @@ import (
 
 var seederRegex = regexp.MustCompile(`(?:👤|seeders?:\s*|peers?:\s*)(\d+)`)
 
+type SingleStreamResult struct {
+	IMDbID         string `json:"imdb_id,omitempty"`
+	Available      bool   `json:"available"`
+	Verified       bool   `json:"verified"`
+	StreamCount    int    `json:"stream_count"`
+	HighestQuality string `json:"highest_quality,omitempty"`
+	MaxSeeders     int    `json:"max_seeders,omitempty"`
+	BestStream     string `json:"best_stream,omitempty"`
+	TorboxCached   bool   `json:"torbox_cached,omitempty"`
+	TitleMatched   bool   `json:"title_matched,omitempty"`
+	Message        string `json:"message"`
+}
+
 type StreamAvailabilityResult struct {
-	IMDbID         string                     `json:"imdb_id,omitempty"`
-	Available      bool                       `json:"available"`
-	Verified       bool                       `json:"verified"`
-	StreamCount    int                        `json:"stream_count"`
-	HighestQuality string                     `json:"highest_quality,omitempty"`
-	MaxSeeders     int                        `json:"max_seeders,omitempty"`
-	BestStream     string                     `json:"best_stream,omitempty"`
-	TorboxCached   bool                       `json:"torbox_cached,omitempty"`
-	TitleMatched   bool                       `json:"title_matched,omitempty"`
-	Message        string                     `json:"message"`
-	BatchResults   []StreamAvailabilityResult `json:"batch_results,omitempty"`
+	IMDbID         string               `json:"imdb_id,omitempty"`
+	Available      bool                 `json:"available"`
+	Verified       bool                 `json:"verified"`
+	StreamCount    int                  `json:"stream_count"`
+	HighestQuality string               `json:"highest_quality,omitempty"`
+	MaxSeeders     int                  `json:"max_seeders,omitempty"`
+	BestStream     string               `json:"best_stream,omitempty"`
+	TorboxCached   bool                 `json:"torbox_cached,omitempty"`
+	TitleMatched   bool                 `json:"title_matched,omitempty"`
+	Message        string               `json:"message"`
+	BatchResults   []SingleStreamResult `json:"batch_results,omitempty"`
 }
 
 type torrentioStream struct {
@@ -220,7 +233,7 @@ func CheckBatchAvailability(ctx context.Context, mediaType string, imdbIDs []str
 		imdbIDs = imdbIDs[:50]
 	}
 
-	results := make([]StreamAvailabilityResult, len(imdbIDs))
+	results := make([]SingleStreamResult, len(imdbIDs))
 	type job struct {
 		index int
 		id    string
@@ -241,13 +254,25 @@ func CheckBatchAvailability(ctx context.Context, mediaType string, imdbIDs []str
 			for j := range jobs {
 				res, err := CheckAvailability(ctx, mediaType, j.id, "", torboxKey, streamBase)
 				if err != nil {
-					res = StreamAvailabilityResult{
+					results[j.index] = SingleStreamResult{
 						IMDbID:    j.id,
 						Available: false,
 						Message:   err.Error(),
 					}
+				} else {
+					results[j.index] = SingleStreamResult{
+						IMDbID:         res.IMDbID,
+						Available:      res.Available,
+						Verified:       res.Verified,
+						StreamCount:    res.StreamCount,
+						HighestQuality: res.HighestQuality,
+						MaxSeeders:     res.MaxSeeders,
+						BestStream:     res.BestStream,
+						TorboxCached:   res.TorboxCached,
+						TitleMatched:   res.TitleMatched,
+						Message:        res.Message,
+					}
 				}
-				results[j.index] = res
 			}
 		}()
 	}
