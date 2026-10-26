@@ -29,12 +29,16 @@ type Registry struct {
 	mem        []DeviceConfig
 }
 
-func NewRegistryFromEnv() *Registry {
+func NewRegistry(redisURL, redisToken string) *Registry {
 	return &Registry{
-		RedisURL:   os.Getenv("UPSTASH_REDIS_REST_URL"),
-		RedisToken: os.Getenv("UPSTASH_REDIS_REST_TOKEN"),
+		RedisURL:   redisURL,
+		RedisToken: redisToken,
 		Client:     &http.Client{Timeout: 6 * time.Second},
 	}
+}
+
+func NewRegistryFromEnv() *Registry {
+	return NewRegistry(os.Getenv("UPSTASH_REDIS_REST_URL"), os.Getenv("UPSTASH_REDIS_REST_TOKEN"))
 }
 
 const devicesRedisKey = "stremio-catalog-mcp:v1:devices"

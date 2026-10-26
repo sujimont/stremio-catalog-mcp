@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -42,11 +43,7 @@ func runtimeFromEnv() Runtime {
 		}
 		return store.SaveAddonBackup(ctx, raw)
 	}
-	deviceReg := &device.Registry{
-		RedisURL:   store.URL,
-		RedisToken: store.Token,
-		Client:     &http.Client{Timeout: 6 * time.Second},
-	}
+	deviceReg := device.NewRegistry(store.URL, store.Token)
 	return Runtime{
 		Manager:         catalog.Manager{Store: store, Resolver: catalog.Cinemeta{}},
 		Account:         account,
