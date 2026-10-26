@@ -23,6 +23,7 @@ type Runtime struct {
 	Account         stremio.AccountAPI
 	Store           *catalog.RedisStore
 	VisibilityStore catalog.Store
+	DeviceRegistry  *device.Registry
 	BaseURL         string
 	FeedToken       string
 	TorboxAPIKey    string
@@ -41,11 +42,17 @@ func runtimeFromEnv() Runtime {
 		}
 		return store.SaveAddonBackup(ctx, raw)
 	}
+	deviceReg := &device.Registry{
+		RedisURL:   store.URL,
+		RedisToken: store.Token,
+		Client:     &http.Client{Timeout: 6 * time.Second},
+	}
 	return Runtime{
 		Manager:         catalog.Manager{Store: store, Resolver: catalog.Cinemeta{}},
 		Account:         account,
 		Store:           store,
 		VisibilityStore: visibilityStore,
+		DeviceRegistry:  deviceReg,
 		BaseURL:         os.Getenv("PUBLIC_BASE_URL"),
 		FeedToken:       os.Getenv("STREMIO_FEED_TOKEN"),
 		TorboxAPIKey:    os.Getenv("TORBOX_API_KEY"),
@@ -67,6 +74,7 @@ func (rt Runtime) forProfile(profile string) Runtime {
 		Account:         rt.Account,
 		Store:           store,
 		VisibilityStore: visibilityStore,
+		DeviceRegistry:  rt.DeviceRegistry,
 		BaseURL:         rt.BaseURL,
 		FeedToken:       rt.FeedToken,
 		TorboxAPIKey:    rt.TorboxAPIKey,
@@ -215,6 +223,21 @@ type AddonsManageResult struct {
 	Addons  []stremio.InstalledAddonInfo `json:"addons,omitempty"`
 	Count   int                          `json:"count,omitempty"`
 	Message string                       `json:"message"`
+}
+
+type DevicesManageInput struct {
+	Action     string `json:"action" jsonschema:"Action: list, register, or remove"`
+	Name       string `json:"name,omitempty" jsonschema:"Display name of the TV (e.g. Living Room TV, Bedroom TV)"`
+	Alias      string `json:"alias,omitempty" jsonschema:"Room alias (e.g. living_room, bedroom, kids_room)"`
+	IP         string `json:"ip,omitempty" jsonschema:"Local Wi-Fi IP address of the TV (e.g. 192.168.1.50)"`
+	WebhookURL string `json:"webhook_url,omitempty" jsonschema:"Optional Home Assistant or TV webhook URL"`
+	Platform   string `json:"platform,omitempty" jsonschema:"TV OS platform: android_tv, fire_tv, or home_assistant (default android_tv)"`
+}
+
+type DevicesManageResult struct {
+	Devices []device.DeviceConfig `json:"devices,omitempty"`
+	Count   int                   `json:"count,omitempty"`
+	Message string                `json:"message"`
 }
 
 func serverFor(rt Runtime) *mcp.Server {
@@ -367,12 +390,12 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 11: play_on_tv
-	mcp.AddTool(s, catalogTool("play_on_tv", "📺 Play On TV Remote Trigger: generates Stremio deep-links, web-links, ADB command, and dispatches webhook to Home Assistant or Android TV to immediately open or play on your TV."),
+	mcp.AddTool(s, catalogTool("play_on_tv", "📺 Play On TV Remote Trigger: generates targeted Stremio deep-links, web-links, and ADB commands for any TV in the house (Living Room, Bedroom, Kids Room), with optional Home Assistant/Android TV webhook triggers."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input device.PlayOnTVInput) (*mcp.CallToolResult, *device.PlayOnTVResult, error) {
 			if input.WebhookURL == "" {
 				input.WebhookURL = rt.TVWebhookURL
 			}
-			res, err := device.TriggerPlay(ctx, input)
+			res, err := device.TriggerPlay(ctx, rt.DeviceRegistry, input)
 			return nil, res, err
 		})
 
@@ -408,6 +431,53 @@ func serverFor(rt Runtime) *mcp.Server {
 				return nil, AddonsManageResult{Message: fmt.Sprintf("Successfully uninstalled addon %q.", input.AddonID)}, nil
 			default:
 				return nil, AddonsManageResult{}, fmt.Errorf("unknown action %q (must be list, install, or uninstall)", input.Action)
+			}
+		})
+
+	// Tool 13: devices_manage
+	mcp.AddTool(s, catalogTool("devices_manage", "🏠 Household TV Devices Manager: list, register, or remove smart TVs in your house (Living Room, Bedroom, Kids Room) with their local Wi-Fi IP address or webhook so Play On TV knows exactly which screen to launch."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, input DevicesManageInput) (*mcp.CallToolResult, DevicesManageResult, error) {
+			reg := rt.DeviceRegistry
+			if reg == nil {
+				reg = device.NewRegistryFromEnv()
+			}
+			switch input.Action {
+			case "list":
+				list, err := reg.List(ctx)
+				if err != nil {
+					return nil, DevicesManageResult{}, err
+				}
+				return nil, DevicesManageResult{Devices: list, Count: len(list), Message: fmt.Sprintf("Found %d registered household TV devices.", len(list))}, nil
+			case "register":
+				if input.Name == "" && input.Alias == "" {
+					return nil, DevicesManageResult{}, errors.New("device name or alias is required")
+				}
+				dev := device.DeviceConfig{
+					Name:       input.Name,
+					Alias:      input.Alias,
+					IP:         input.IP,
+					WebhookURL: input.WebhookURL,
+					Platform:   input.Platform,
+				}
+				if dev.Name == "" {
+					dev.Name = dev.Alias
+				}
+				if err := reg.Register(ctx, dev); err != nil {
+					return nil, DevicesManageResult{}, err
+				}
+				list, _ := reg.List(ctx)
+				return nil, DevicesManageResult{Devices: list, Count: len(list), Message: fmt.Sprintf("Successfully registered TV device %q (%s) with IP %s.", dev.Name, dev.Alias, dev.IP)}, nil
+			case "remove":
+				if input.Alias == "" {
+					return nil, DevicesManageResult{}, errors.New("alias is required to remove a device")
+				}
+				if err := reg.Remove(ctx, input.Alias); err != nil {
+					return nil, DevicesManageResult{}, err
+				}
+				list, _ := reg.List(ctx)
+				return nil, DevicesManageResult{Devices: list, Count: len(list), Message: fmt.Sprintf("Successfully removed TV device alias %q.", input.Alias)}, nil
+			default:
+				return nil, DevicesManageResult{}, fmt.Errorf("unknown action %q (must be list, register, or remove)", input.Action)
 			}
 		})
 
