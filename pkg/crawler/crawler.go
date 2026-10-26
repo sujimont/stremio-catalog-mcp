@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,18 +16,20 @@ import (
 )
 
 type CrawlResult struct {
-	Query         string `json:"query"`
-	IMDbID        string `json:"imdb_id,omitempty"`
-	Source        string `json:"source"` // "torrent" or "http_stream"
-	Title         string `json:"title"`
-	Quality       string `json:"quality,omitempty"`
-	Seeders       int    `json:"seeders,omitempty"`
-	MagnetURI     string `json:"magnet_uri,omitempty"`
-	StreamURL     string `json:"stream_url,omitempty"`
-	TorboxCached  bool   `json:"torbox_cached,omitempty"`
-	TorboxIngested bool  `json:"torbox_ingested,omitempty"`
-	TorboxID      int    `json:"torbox_id,omitempty"`
-	Message       string `json:"message"`
+	Query          string  `json:"query"`
+	IMDbID         string  `json:"imdb_id,omitempty"`
+	Source         string  `json:"source"` // "torrent" or "http_stream"
+	Title          string  `json:"title"`
+	Quality        string  `json:"quality,omitempty"`
+	FileSize       string  `json:"file_size,omitempty"`
+	FileSizeGB     float64 `json:"file_size_gb,omitempty"`
+	Seeders        int     `json:"seeders,omitempty"`
+	MagnetURI      string  `json:"magnet_uri,omitempty"`
+	StreamURL      string  `json:"stream_url,omitempty"`
+	TorboxCached   bool    `json:"torbox_cached,omitempty"`
+	TorboxIngested bool    `json:"torbox_ingested,omitempty"`
+	TorboxID       int     `json:"torbox_id,omitempty"`
+	Message        string  `json:"message"`
 }
 
 type torrentioStream struct {
@@ -40,7 +43,46 @@ type torrentioResponse struct {
 	Streams []torrentioStream `json:"streams"`
 }
 
-var hex40Regex = regexp.MustCompile(`(?i)\b([0-9a-f]{40})\b`)
+var (
+	hex40Regex    = regexp.MustCompile(`(?i)\b([0-9a-f]{40})\b`)
+	diskSizeRegex = regexp.MustCompile(`(?i)(?:💾\s*|size:\s*)([0-9]+(?:\.[0-9]+)?)\s*(TB|TiB|GB|GiB|MB|MiB)\b`)
+	anySizeRegex  = regexp.MustCompile(`(?i)\b([0-9]+(?:\.[0-9]+)?)\s*(TB|TiB|GB|GiB|MB|MiB)\b`)
+)
+
+func parseFileSizeGB(title string) float64 {
+	match := diskSizeRegex.FindStringSubmatch(title)
+	if len(match) < 3 {
+		match = anySizeRegex.FindStringSubmatch(title)
+	}
+	if len(match) < 3 {
+		return 0
+	}
+	val, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0
+	}
+	unit := strings.ToUpper(match[2])
+	switch {
+	case strings.HasPrefix(unit, "TB") || strings.HasPrefix(unit, "TI"):
+		return val * 1024.0
+	case strings.HasPrefix(unit, "GB") || strings.HasPrefix(unit, "GI"):
+		return val
+	case strings.HasPrefix(unit, "MB") || strings.HasPrefix(unit, "MI"):
+		return val / 1024.0
+	default:
+		return val
+	}
+}
+
+func formatFileSize(sizeGB float64) string {
+	if sizeGB <= 0 {
+		return ""
+	}
+	if sizeGB < 1.0 {
+		return fmt.Sprintf("%.0f MB", sizeGB*1024.0)
+	}
+	return fmt.Sprintf("%.2f GB", sizeGB)
+}
 
 func extractHash(s torrentioStream) string {
 	if s.InfoHash != "" {
@@ -56,11 +98,15 @@ func extractHash(s torrentioStream) string {
 
 // CrawlAndIngest executes the autonomous 2-tier search:
 // 1. Searches torrent streams via Torrentio and checks TorBox cache.
-// 2. If healthy torrents exist, optionally ingests the best magnet to TorBox.
-// 3. If torrents are unavailable, crawls for unmasked HTTP streams.
-func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey string, autoIngest bool, streamBase string) (*CrawlResult, error) {
+// 2. Filters out massive files exceeding maxSizeGB (defaults to 10.0 GB).
+// 3. If healthy torrents exist, optionally ingests the best magnet to TorBox.
+// 4. If torrents are unavailable, crawls for unmasked HTTP streams.
+func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey string, maxSizeGB float64, autoIngest bool, streamBase string) (*CrawlResult, error) {
 	if mediaType == "" {
 		mediaType = "movie"
+	}
+	if maxSizeGB <= 0 {
+		maxSizeGB = 10.0 // Default 10GB limit per movie/episode
 	}
 	httpClient := &http.Client{Timeout: 12 * time.Second}
 
@@ -114,8 +160,8 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 						}
 					}
 
-					// Find the best stream: cached first, then 4k/1080p, then highest seeders
-					bestStream := pickBestStream(data.Streams, cachedMap)
+					// Find the best stream: filtered by max size (default 10GB), cached first, then 4k/1080p, standalone
+					bestStream, bestSize, smallestSize := pickBestStream(data.Streams, cachedMap, maxSizeGB)
 					bestHash := extractHash(bestStream)
 					if bestHash != "" {
 						bestStream.InfoHash = bestHash
@@ -138,6 +184,12 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 
 						isCached := cachedMap != nil && cachedMap[strings.ToLower(bestStream.InfoHash)]
 						quality := detectQuality(bestStream.Name + " " + bestStream.Title)
+						sizeFormatted := formatFileSize(bestSize)
+
+						sizeText := ""
+						if sizeFormatted != "" {
+							sizeText = fmt.Sprintf(" Size: %s (limit: %.1f GB).", sizeFormatted, maxSizeGB)
+						}
 
 						result := &CrawlResult{
 							Query:        title,
@@ -145,6 +197,8 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 							Source:       "torrent",
 							Title:        cleanTitle,
 							Quality:      quality,
+							FileSize:     sizeFormatted,
+							FileSizeGB:   bestSize,
 							MagnetURI:    magnet,
 							StreamURL:    bestStream.URL,
 							TorboxCached: isCached,
@@ -159,13 +213,23 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 								if isCached {
 									cacheMsg = " (Instantly cached & ready to stream!)"
 								}
-								result.Message = fmt.Sprintf("Successfully added to TorBox (Torrent ID: %d)%s. Quality: %s.", result.TorboxID, cacheMsg, quality)
+								result.Message = fmt.Sprintf("Successfully added to TorBox (Torrent ID: %d)%s. Quality: %s.%s", result.TorboxID, cacheMsg, quality, sizeText)
 								return result, nil
 							}
 						}
 
-						result.Message = fmt.Sprintf("Found high quality torrent (%s). Cached on TorBox: %v.", quality, isCached)
+						result.Message = fmt.Sprintf("Found high quality torrent (%s).%s Cached on TorBox: %v.", quality, sizeText, isCached)
 						return result, nil
+					} else if smallestSize > maxSizeGB {
+						return &CrawlResult{
+							Query:      title,
+							IMDbID:     imdbID,
+							Source:     "torrent",
+							Title:      title,
+							FileSize:   formatFileSize(smallestSize),
+							FileSizeGB: smallestSize,
+							Message:    fmt.Sprintf("Found %d torrents, but all exceed the %.1f GB limit (smallest is %s). Ingestion to TorBox blocked to protect storage. Pass max_size_gb to override.", len(data.Streams), maxSizeGB, formatFileSize(smallestSize)),
+						}, nil
 					}
 				}
 			}
@@ -213,53 +277,80 @@ func isPack(s torrentioStream) bool {
 	return strings.Contains(lower, "pack") || strings.Contains(lower, "collection") || strings.Contains(lower, "boxset") || strings.Contains(lower, "movies")
 }
 
-func pickBestStream(streams []torrentioStream, cachedMap map[string]bool) torrentioStream {
+func pickBestStream(streams []torrentioStream, cachedMap map[string]bool, maxSizeGB float64) (torrentioStream, float64, float64) {
 	if len(streams) == 0 {
-		return torrentioStream{}
+		return torrentioStream{}, 0, 0
 	}
 
-	// 1. Check for cached 4K or 1080p standalone release
-	if cachedMap != nil {
-		for _, s := range streams {
-			if cachedMap[strings.ToLower(s.InfoHash)] && !isPack(s) {
-				q := detectQuality(s.Name + " " + s.Title)
-				if q == "4K" || q == "1080p" {
-					return s
-				}
-			}
-		}
-		// Any cached standalone stream
-		for _, s := range streams {
-			if cachedMap[strings.ToLower(s.InfoHash)] && !isPack(s) {
-				return s
-			}
-		}
-		// Any cached stream (even pack if no standalone exists)
-		for _, s := range streams {
-			if cachedMap[strings.ToLower(s.InfoHash)] {
-				return s
-			}
-		}
+	type streamInfo struct {
+		stream  torrentioStream
+		sizeGB  float64
+		quality string
+		cached  bool
+		isPack  bool
 	}
 
-	// 2. Otherwise pick first 1080p or 4k standalone stream
+	var candidates []streamInfo
+	smallestSize := 0.0
+
 	for _, s := range streams {
-		if !isPack(s) {
-			q := detectQuality(s.Name + " " + s.Title)
-			if q == "1080p" || q == "4K" {
-				return s
-			}
+		size := parseFileSizeGB(s.Title)
+		if size > 0 && (smallestSize == 0 || size < smallestSize) {
+			smallestSize = size
+		}
+		cached := cachedMap != nil && cachedMap[strings.ToLower(s.InfoHash)]
+		candidates = append(candidates, streamInfo{
+			stream:  s,
+			sizeGB:  size,
+			quality: detectQuality(s.Name + " " + s.Title),
+			cached:  cached,
+			isPack:  isPack(s),
+		})
+	}
+
+	// Filter by maxSizeGB: if maxSizeGB > 0 and size > maxSizeGB, exclude
+	var allowed []streamInfo
+	for _, c := range candidates {
+		if maxSizeGB > 0 && c.sizeGB > 0 && c.sizeGB > maxSizeGB {
+			continue
+		}
+		allowed = append(allowed, c)
+	}
+
+	if len(allowed) == 0 {
+		return torrentioStream{}, 0, smallestSize
+	}
+
+	// 1. Check for cached 4K or 1080p standalone release under max size
+	for _, c := range allowed {
+		if c.cached && !c.isPack && (c.quality == "4K" || c.quality == "1080p") {
+			return c.stream, c.sizeGB, smallestSize
 		}
 	}
 
-	// 3. Any standalone stream
-	for _, s := range streams {
-		if !isPack(s) {
-			return s
+	// 2. Any cached standalone stream under max size
+	for _, c := range allowed {
+		if c.cached && !c.isPack {
+			return c.stream, c.sizeGB, smallestSize
 		}
 	}
 
-	return streams[0]
+	// 3. First 1080p or 4k standalone stream under max size
+	for _, c := range allowed {
+		if !c.isPack && (c.quality == "1080p" || c.quality == "4K") {
+			return c.stream, c.sizeGB, smallestSize
+		}
+	}
+
+	// 4. Any standalone stream under max size
+	for _, c := range allowed {
+		if !c.isPack {
+			return c.stream, c.sizeGB, smallestSize
+		}
+	}
+
+	// 5. Fallback to any allowed stream
+	return allowed[0].stream, allowed[0].sizeGB, smallestSize
 }
 
 func detectQuality(text string) string {

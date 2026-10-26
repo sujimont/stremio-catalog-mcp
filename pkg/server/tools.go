@@ -188,11 +188,12 @@ type TMDBSimilarResult struct {
 }
 
 type MediaCrawlInput struct {
-	Title        string `json:"title" jsonschema:"Movie or show title to crawl"`
-	IMDbID       string `json:"imdb_id,omitempty" jsonschema:"Optional IMDb ID for precision"`
-	MediaType    string `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
-	AutoIngest   bool   `json:"auto_ingest,omitempty" jsonschema:"Automatically ingest best torrent/stream to TorBox (default true)"`
-	TorboxAPIKey string `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override"`
+	Title        string  `json:"title" jsonschema:"Movie or show title to crawl"`
+	IMDbID       string  `json:"imdb_id,omitempty" jsonschema:"Optional IMDb ID for precision"`
+	MediaType    string  `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	MaxSizeGB    float64 `json:"max_size_gb,omitempty" jsonschema:"Maximum file size in GB to ingest to TorBox (default 10.0 GB per movie or episode)"`
+	AutoIngest   bool    `json:"auto_ingest,omitempty" jsonschema:"Automatically ingest best torrent/stream to TorBox (default true)"`
+	TorboxAPIKey string  `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override"`
 }
 
 type StreamUnmaskInput struct {
@@ -352,7 +353,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 9: media_crawl_and_ingest
-	mcp.AddTool(s, catalogTool("media_crawl_and_ingest", "🚀 Autonomous TorBox Torrent & HTTP Crawler: searches high-quality torrents/magnets, verifies TorBox cache, and automatically ingests the best stream to TorBox so it's ready to stream."),
+	mcp.AddTool(s, catalogTool("media_crawl_and_ingest", "🚀 Autonomous TorBox Torrent & HTTP Crawler: searches high-quality torrents/magnets under 10GB limit (configurable via max_size_gb), verifies TorBox cache, and automatically ingests the best stream to TorBox so it's ready to stream."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input MediaCrawlInput) (*mcp.CallToolResult, *crawler.CrawlResult, error) {
 			torboxKey := input.TorboxAPIKey
 			if torboxKey == "" {
@@ -362,7 +363,7 @@ func serverFor(rt Runtime) *mcp.Server {
 			if torboxKey == "" && discoveredTBKey != "" {
 				torboxKey = discoveredTBKey
 			}
-			result, err := crawler.CrawlAndIngest(ctx, input.Title, input.IMDbID, input.MediaType, torboxKey, input.AutoIngest, streamBase)
+			result, err := crawler.CrawlAndIngest(ctx, input.Title, input.IMDbID, input.MediaType, torboxKey, input.MaxSizeGB, input.AutoIngest, streamBase)
 			return nil, result, err
 		})
 
