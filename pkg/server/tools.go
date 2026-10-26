@@ -268,7 +268,11 @@ func serverFor(rt Runtime) *mcp.Server {
 			if torboxKey == "" {
 				torboxKey = rt.TorboxAPIKey
 			}
-			result, err := streams.CheckAvailability(ctx, input.MediaType, input.IMDbID, torboxKey)
+			streamBase, discoveredTBKey := rt.Account.GetTorrentioStreamBase(ctx)
+			if torboxKey == "" && discoveredTBKey != "" {
+				torboxKey = discoveredTBKey
+			}
+			result, err := streams.CheckAvailability(ctx, input.MediaType, input.IMDbID, torboxKey, streamBase)
 			return nil, result, err
 		})
 
@@ -324,7 +328,11 @@ func serverFor(rt Runtime) *mcp.Server {
 			if torboxKey == "" {
 				torboxKey = rt.TorboxAPIKey
 			}
-			result, err := crawler.CrawlAndIngest(ctx, input.Title, input.IMDbID, input.MediaType, torboxKey, input.AutoIngest)
+			streamBase, discoveredTBKey := rt.Account.GetTorrentioStreamBase(ctx)
+			if torboxKey == "" && discoveredTBKey != "" {
+				torboxKey = discoveredTBKey
+			}
+			result, err := crawler.CrawlAndIngest(ctx, input.Title, input.IMDbID, input.MediaType, torboxKey, input.AutoIngest, streamBase)
 			return nil, result, err
 		})
 

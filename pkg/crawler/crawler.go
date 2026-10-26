@@ -42,7 +42,7 @@ type torrentioResponse struct {
 // 1. Searches torrent streams via Torrentio and checks TorBox cache.
 // 2. If healthy torrents exist, optionally ingests the best magnet to TorBox.
 // 3. If torrents are unavailable, crawls for unmasked HTTP streams.
-func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey string, autoIngest bool) (*CrawlResult, error) {
+func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey string, autoIngest bool, streamBase string) (*CrawlResult, error) {
 	if mediaType == "" {
 		mediaType = "movie"
 	}
@@ -64,8 +64,13 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 	// Tier 1: Search Torrents
 	if imdbID != "" {
 		torrentURL := fmt.Sprintf("https://torrentio.strem.fun/stream/%s/%s.json", mediaType, imdbID)
+		if streamBase != "" {
+			torrentURL = fmt.Sprintf("%s/stream/%s/%s.json", strings.TrimRight(streamBase, "/"), mediaType, imdbID)
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
 		if err == nil {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+			req.Header.Set("Accept", "application/json, text/plain, */*")
 			resp, err := httpClient.Do(req)
 			if err == nil && resp.StatusCode == http.StatusOK {
 				var data torrentioResponse
@@ -74,15 +79,20 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 
 				if len(data.Streams) > 0 {
 					var hashes []string
+					cachedMap := make(map[string]bool)
 					for _, s := range data.Streams {
+						if strings.Contains(s.Name, "[TB+]") && s.InfoHash != "" {
+							cachedMap[strings.ToLower(s.InfoHash)] = true
+						}
 						if s.InfoHash != "" {
 							hashes = append(hashes, s.InfoHash)
 						}
 					}
 
-					var cachedMap map[string]bool
-					if torboxClient != nil && len(hashes) > 0 {
-						cachedMap, _ = torboxClient.CheckCached(ctx, hashes)
+					if torboxClient != nil && len(hashes) > 0 && len(cachedMap) == 0 {
+						if tbMap, _ := torboxClient.CheckCached(ctx, hashes); tbMap != nil {
+							cachedMap = tbMap
+						}
 					}
 
 					// Find the best stream: cached first, then 4k/1080p, then highest seeders

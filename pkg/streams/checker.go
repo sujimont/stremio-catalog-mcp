@@ -36,7 +36,7 @@ type torrentioResponse struct {
 }
 
 // CheckAvailability queries Torrentio and optional TorBox cache to check if a title has healthy streams.
-func CheckAvailability(ctx context.Context, mediaType, imdbID, torboxKey string) (StreamAvailabilityResult, error) {
+func CheckAvailability(ctx context.Context, mediaType, imdbID, torboxKey, streamBase string) (StreamAvailabilityResult, error) {
 	if mediaType == "" {
 		mediaType = "movie"
 	}
@@ -45,10 +45,15 @@ func CheckAvailability(ctx context.Context, mediaType, imdbID, torboxKey string)
 	}
 
 	url := fmt.Sprintf("https://torrentio.strem.fun/stream/%s/%s.json", mediaType, imdbID)
+	if streamBase != "" {
+		url = fmt.Sprintf("%s/stream/%s/%s.json", strings.TrimRight(streamBase, "/"), mediaType, imdbID)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return StreamAvailabilityResult{}, err
 	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 
 	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
@@ -81,10 +86,14 @@ func CheckAvailability(ctx context.Context, mediaType, imdbID, torboxKey string)
 	highestQuality := "SD"
 	maxSeeders := 0
 	bestTitle := ""
+	torboxCached := false
 	var hashes []string
 
 	for _, s := range data.Streams {
 		content := strings.ToLower(s.Name + " " + s.Title)
+		if strings.Contains(s.Name, "[TB+]") || strings.Contains(s.Name, "[RD+]") || strings.Contains(s.Name, "[AD+]") {
+			torboxCached = true
+		}
 		if strings.Contains(content, "4k") || strings.Contains(content, "2160p") {
 			highestQuality = "4K"
 		} else if highestQuality != "4K" && (strings.Contains(content, "1080p") || strings.Contains(content, "fhd")) {
@@ -109,8 +118,7 @@ func CheckAvailability(ctx context.Context, mediaType, imdbID, torboxKey string)
 		}
 	}
 
-	torboxCached := false
-	if torboxKey != "" && len(hashes) > 0 {
+	if !torboxCached && torboxKey != "" && len(hashes) > 0 {
 		torboxCached = checkTorboxCache(ctx, client, torboxKey, hashes)
 	}
 

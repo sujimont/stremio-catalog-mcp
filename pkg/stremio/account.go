@@ -394,6 +394,30 @@ type InstalledAddonInfo struct {
 	Protected    bool     `json:"protected"`
 }
 
+// GetTorrentioStreamBase extracts the user's installed Torrentio stream base URL and TorBox API key.
+func (a AccountAPI) GetTorrentioStreamBase(ctx context.Context) (string, string) {
+	addons, err := a.Get(ctx)
+	if err != nil {
+		return "", ""
+	}
+	for _, entry := range addons {
+		if strings.Contains(entry.TransportURL, "torrentio.strem.fun") {
+			base := strings.TrimSuffix(entry.TransportURL, "/manifest.json")
+			torboxKey := ""
+			if idx := strings.Index(base, "torbox="); idx != -1 {
+				sub := base[idx+7:]
+				if end := strings.IndexAny(sub, "|/"); end != -1 {
+					torboxKey = sub[:end]
+				} else {
+					torboxKey = sub
+				}
+			}
+			return base, torboxKey
+		}
+	}
+	return "", ""
+}
+
 // ListInstalledAddons returns a user-friendly summary of all installed addons.
 func (a AccountAPI) ListInstalledAddons(ctx context.Context) ([]InstalledAddonInfo, error) {
 	addons, err := a.Get(ctx)
