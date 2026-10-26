@@ -69,6 +69,9 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 			targetDeviceName = dev.Name
 			if deviceIP == "" {
 				deviceIP = dev.IP
+			} else if dev.IP != deviceIP {
+				dev.IP = deviceIP
+				_ = reg.Register(ctx, *dev)
 			}
 			if webhookURL == "" {
 				webhookURL = dev.WebhookURL

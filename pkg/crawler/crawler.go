@@ -208,22 +208,33 @@ func resolveIMDbFromCinemeta(ctx context.Context, client *http.Client, mediaType
 	return "", fmt.Errorf("not found in Cinemeta")
 }
 
+func isPack(s torrentioStream) bool {
+	lower := strings.ToLower(s.Name + " " + s.Title)
+	return strings.Contains(lower, "pack") || strings.Contains(lower, "collection") || strings.Contains(lower, "boxset") || strings.Contains(lower, "movies")
+}
+
 func pickBestStream(streams []torrentioStream, cachedMap map[string]bool) torrentioStream {
 	if len(streams) == 0 {
 		return torrentioStream{}
 	}
 
-	// 1. Check for cached 4K or 1080p
+	// 1. Check for cached 4K or 1080p standalone release
 	if cachedMap != nil {
 		for _, s := range streams {
-			if cachedMap[strings.ToLower(s.InfoHash)] {
+			if cachedMap[strings.ToLower(s.InfoHash)] && !isPack(s) {
 				q := detectQuality(s.Name + " " + s.Title)
 				if q == "4K" || q == "1080p" {
 					return s
 				}
 			}
 		}
-		// Any cached stream
+		// Any cached standalone stream
+		for _, s := range streams {
+			if cachedMap[strings.ToLower(s.InfoHash)] && !isPack(s) {
+				return s
+			}
+		}
+		// Any cached stream (even pack if no standalone exists)
 		for _, s := range streams {
 			if cachedMap[strings.ToLower(s.InfoHash)] {
 				return s
@@ -231,10 +242,19 @@ func pickBestStream(streams []torrentioStream, cachedMap map[string]bool) torren
 		}
 	}
 
-	// 2. Otherwise pick first 1080p or 4k stream
+	// 2. Otherwise pick first 1080p or 4k standalone stream
 	for _, s := range streams {
-		q := detectQuality(s.Name + " " + s.Title)
-		if q == "1080p" || q == "4K" {
+		if !isPack(s) {
+			q := detectQuality(s.Name + " " + s.Title)
+			if q == "1080p" || q == "4K" {
+				return s
+			}
+		}
+	}
+
+	// 3. Any standalone stream
+	for _, s := range streams {
+		if !isPack(s) {
 			return s
 		}
 	}

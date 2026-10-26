@@ -312,20 +312,65 @@ func (c *Client) Discover(ctx context.Context, opts DiscoverOptions) ([]Item, er
 		params.Set("sort_by", "popularity.desc")
 	}
 
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
 	var page DiscoverPage
 	if err := c.get(ctx, endpoint, params, &page); err != nil {
 		return nil, err
 	}
 
-	limit := opts.Limit
-	if limit <= 0 || limit > 20 {
-		limit = 10
-	}
-	if len(page.Results) > limit {
-		page.Results = page.Results[:limit]
+	allResults := page.Results
+	pagesNeeded := (limit + 19) / 20
+	if pagesNeeded > 1 && page.TotalPages > 1 {
+		if pagesNeeded > page.TotalPages {
+			pagesNeeded = page.TotalPages
+		}
+		type pageRes struct {
+			page int
+			res  []MovieResult
+		}
+		ch := make(chan pageRes, pagesNeeded-1)
+		var pageWg sync.WaitGroup
+		for p := 2; p <= pagesNeeded; p++ {
+			pageWg.Add(1)
+			go func(pageNum int) {
+				defer pageWg.Done()
+				pageParams := make(url.Values)
+				for k, v := range params {
+					pageParams[k] = v
+				}
+				pageParams.Set("page", strconv.Itoa(pageNum))
+				var pData DiscoverPage
+				if err := c.get(ctx, endpoint, pageParams, &pData); err == nil {
+					ch <- pageRes{page: pageNum, res: pData.Results}
+				}
+			}(p)
+		}
+		pageWg.Wait()
+		close(ch)
+
+		pageMap := make(map[int][]MovieResult)
+		for pr := range ch {
+			pageMap[pr.page] = pr.res
+		}
+		for p := 2; p <= pagesNeeded; p++ {
+			if list, ok := pageMap[p]; ok {
+				allResults = append(allResults, list...)
+			}
+		}
 	}
 
-	return c.enrichWithIMDb(ctx, isTV, page.Results)
+	if len(allResults) > limit {
+		allResults = allResults[:limit]
+	}
+
+	return c.enrichWithIMDb(ctx, isTV, allResults)
 }
 
 // Similar finds titles similar or recommended for an IMDb ID or Title.
@@ -379,8 +424,11 @@ func (c *Client) Similar(ctx context.Context, opts SimilarOptions) ([]Item, erro
 	}
 
 	limit := opts.Limit
-	if limit <= 0 || limit > 20 {
+	if limit <= 0 {
 		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
 	}
 	if len(page.Results) > limit {
 		page.Results = page.Results[:limit]

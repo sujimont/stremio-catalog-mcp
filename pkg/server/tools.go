@@ -163,7 +163,7 @@ type TMDBDiscoverInput struct {
 	Year          int     `json:"year,omitempty" jsonschema:"Release year filter (e.g. 2024, 2025)"`
 	MinRating     float64 `json:"min_rating,omitempty" jsonschema:"Minimum TMDB rating (e.g. 7.0)"`
 	SortBy        string  `json:"sort_by,omitempty" jsonschema:"Sort order (default popularity.desc, or vote_average.desc)"`
-	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum results to return (1-20, default 10)"`
+	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum results to return (1-50, default 10)"`
 	TMDBAPIKey   string  `json:"tmdb_api_key,omitempty" jsonschema:"Optional TMDB API key override"`
 }
 
@@ -177,7 +177,7 @@ type TMDBSimilarInput struct {
 	IMDbID      string `json:"imdb_id,omitempty" jsonschema:"IMDb ID of movie/series to find recommendations for"`
 	Title       string `json:"title,omitempty" jsonschema:"Title of movie/series to find recommendations for"`
 	MediaType   string `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
-	Limit       int    `json:"limit,omitempty" jsonschema:"Maximum results to return (1-20, default 10)"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"Maximum results to return (1-50, default 10)"`
 	TMDBAPIKey string `json:"tmdb_api_key,omitempty" jsonschema:"Optional TMDB API key override"`
 }
 

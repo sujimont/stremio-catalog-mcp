@@ -67,7 +67,7 @@ func (r *Registry) List(ctx context.Context) ([]DeviceConfig, error) {
 
 	// Return standard room placeholders if nothing is configured yet
 	return []DeviceConfig{
-		{Name: "Living Room TV", Alias: "living_room", Platform: "android_tv"},
+		{Name: "Living Room TV", Alias: "living_room", IP: "192.168.1.50", Platform: "android_tv"},
 		{Name: "Bedroom TV", Alias: "bedroom", Platform: "android_tv"},
 		{Name: "Kids Room TV", Alias: "kids_room", Platform: "android_tv"},
 	}, nil

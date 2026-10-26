@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -309,15 +310,17 @@ func (a AccountAPI) GetWatchHistory(ctx context.Context, limit int, onlyComplete
 	}
 
 	// Sort tuples descending by timestamp (newest first)
-	for i := 0; i < len(tuples)-1; i++ {
-		for j := i + 1; j < len(tuples); j++ {
-			if tuples[j].mtime > tuples[i].mtime {
-				tuples[i], tuples[j] = tuples[j], tuples[i]
-			}
-		}
-	}
+	sort.Slice(tuples, func(i, j int) bool {
+		return tuples[i].mtime > tuples[j].mtime
+	})
 
 	fetchCount := limit * 2
+	if onlyCompleted {
+		fetchCount = limit * 4
+	}
+	if fetchCount > 100 {
+		fetchCount = 100
+	}
 	if fetchCount > len(tuples) {
 		fetchCount = len(tuples)
 	}
