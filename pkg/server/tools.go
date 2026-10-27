@@ -88,44 +88,6 @@ func (rt Runtime) forProfile(profile string) Runtime {
 	}
 }
 
-type SyncStatus struct {
-	PushedToAccount bool   `json:"pushed_to_account"`
-	Message         string `json:"message"`
-}
-
-func (rt Runtime) syncAccount(ctx context.Context) SyncStatus {
-	if rt.Account.AuthKey == "" {
-		return SyncStatus{Message: "Saved. Stremio account not linked; install the addon URL manually or configure STREMIO_AUTH_KEY to enable automatic row syncing."}
-	}
-	if err := rt.Account.Sync(ctx, rt.Manager); err != nil {
-		return SyncStatus{Message: fmt.Sprintf("Saved, but Stremio account sync failed: %s. Use action='sync' to retry.", err)}
-	}
-	return SyncStatus{PushedToAccount: true, Message: "Saved and synced to your Stremio account. Open Stremio to see the updated rows."}
-}
-
-type CatalogsGetInput struct {
-	Profile         string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, suji, default)"`
-	RowID           string `json:"row_id,omitempty" jsonschema:"Optional catalog row ID; returns this row with its ordered titles and poster URLs"`
-	IncludeTitles   bool   `json:"include_titles,omitempty" jsonschema:"Include all titles and poster URLs when listing multiple rows; default is a compact summary"`
-	IncludeInstall  bool   `json:"include_install_url,omitempty" jsonschema:"Include the private Stremio/Nuvio addon install URL for this profile"`
-	IncludePruned   bool   `json:"include_pruned,omitempty" jsonschema:"Include archived/pruned watched titles"`
-}
-
-type CatalogsGetResult struct {
-	Profile    string                   `json:"profile,omitempty"`
-	Revision   int                      `json:"revision"`
-	Rows       []catalog.CatalogSummary `json:"rows"`
-	InstallURL string                   `json:"install_url,omitempty"`
-	Warning    string                   `json:"warning,omitempty"`
-}
-
-type CatalogsUpdateResult struct {
-	Profile    string                   `json:"profile,omitempty"`
-	Revision   int                      `json:"revision"`
-	Rows       []catalog.CatalogSummary `json:"rows"`
-	InstallURL string                   `json:"install_url,omitempty"`
-	Sync       SyncStatus               `json:"sync"`
-}
 
 func readOnlyTool(name, description string) *mcp.Tool {
 	return &mcp.Tool{
