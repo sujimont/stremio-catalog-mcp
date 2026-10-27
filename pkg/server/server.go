@@ -17,6 +17,10 @@ var transport = mcp.NewStreamableHTTPHandler(
 	&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true},
 )
 
+func makeServer() *mcp.Server {
+	return serverFor(runtimeFromEnv())
+}
+
 // Handler enforces the private MCP connection key on every request.
 // Accepts key via Authorization: Bearer <key> header (recommended) or ?key=<key> query parameter.
 // A missing server key always fails closed, including during deployments.
