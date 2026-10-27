@@ -45,50 +45,7 @@ func NewRegistryFromEnv() *Registry {
 
 const devicesRedisKey = "stremio-catalog-mcp:v1:devices"
 
-func (r *Registry) List(ctx context.Context) ([]DeviceConfig, error) {
-	if r.RedisURL != "" && r.RedisToken != "" {
-		// Propagate Redis errors so callers see "bad token" rather than empty list.
-		raw, devices, err := r.loadRawFromRedis(ctx)
-		if err != nil {
-			return nil, err
-		}
-		// If the key exists in Redis (even if empty "[]"), return devices directly.
-		// A user who removed all devices will have raw == "[]" and len(devices) == 0,
-		// and it must stay empty instead of resurrecting deleted entries from TV_DEVICES_JSON!
-		if raw != "" {
-			return devices, nil
-		}
-		// If the key has never been written to Redis at all (raw == ""), check TV_DEVICES_JSON.
-		if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
-			var list []DeviceConfig
-			if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
-				return list, nil
-			}
-		}
-		return []DeviceConfig{}, nil
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.mem != nil {
-		// In-memory cache is initialized (even if empty after removals); do not resurrect.
-		return r.mem, nil
-	}
-
-	// Check if TV_DEVICES_JSON is provided in environment (no-Redis deployments only, uninitialized).
-	if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
-		var list []DeviceConfig
-		if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
-			r.mem = list
-			return list, nil
-		}
-	}
-
-	r.mem = []DeviceConfig{}
-	return r.mem, nil
-}
-
-func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
+func validateDeviceConfig(dev *DeviceConfig) error {
 	dev.Alias = normalizeAlias(dev.Alias)
 	if dev.Alias == "" {
 		dev.Alias = normalizeAlias(dev.Name)
@@ -118,6 +75,70 @@ func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
 			return fmt.Errorf("invalid webhook URL (SSRF protected): %w", err)
 		}
 	}
+	return nil
+}
+
+func loadEnvDevices() []DeviceConfig {
+	envJSON := os.Getenv("TV_DEVICES_JSON")
+	if envJSON == "" {
+		return nil
+	}
+	var rawList []DeviceConfig
+	if err := json.Unmarshal([]byte(envJSON), &rawList); err != nil {
+		return nil
+	}
+	validList := make([]DeviceConfig, 0, len(rawList))
+	for _, dev := range rawList {
+		d := dev
+		if err := validateDeviceConfig(&d); err != nil {
+			continue // skip invalid entries from TV_DEVICES_JSON
+		}
+		validList = append(validList, d)
+	}
+	return validList
+}
+
+func (r *Registry) List(ctx context.Context) ([]DeviceConfig, error) {
+	if r.RedisURL != "" && r.RedisToken != "" {
+		// Propagate Redis errors so callers see "bad token" rather than empty list.
+		raw, devices, err := r.loadRawFromRedis(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// If the key exists in Redis (even if empty "[]"), return devices directly.
+		// A user who removed all devices will have raw == "[]" and len(devices) == 0,
+		// and it must stay empty instead of resurrecting deleted entries from TV_DEVICES_JSON!
+		if raw != "" {
+			return devices, nil
+		}
+		// If the key has never been written to Redis at all (raw == ""), check TV_DEVICES_JSON.
+		if envList := loadEnvDevices(); len(envList) > 0 {
+			return envList, nil
+		}
+		return []DeviceConfig{}, nil
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mem != nil {
+		// In-memory cache is initialized (even if empty after removals); do not resurrect.
+		return r.mem, nil
+	}
+
+	// Check if TV_DEVICES_JSON is provided in environment (no-Redis deployments only, uninitialized).
+	if envList := loadEnvDevices(); len(envList) > 0 {
+		r.mem = envList
+		return envList, nil
+	}
+
+	r.mem = []DeviceConfig{}
+	return r.mem, nil
+}
+
+func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
+	if err := validateDeviceConfig(&dev); err != nil {
+		return err
+	}
 
 	if r.RedisURL != "" && r.RedisToken != "" {
 		for attempt := 0; attempt < 5; attempt++ {
@@ -127,12 +148,7 @@ func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
 			}
 			// If Redis has never been initialized yet (rawPrev == ""), seed initial devices from TV_DEVICES_JSON
 			if rawPrev == "" {
-				if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
-					var list []DeviceConfig
-					if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
-						current = list
-					}
-				}
+				current = loadEnvDevices()
 			}
 			updated := make([]DeviceConfig, 0, len(current)+1)
 			found := false
@@ -170,12 +186,7 @@ func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
 	defer r.mu.Unlock()
 	current := r.mem
 	if current == nil {
-		if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
-			var list []DeviceConfig
-			if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
-				current = list
-			}
-		}
+		current = loadEnvDevices()
 	}
 	updated := make([]DeviceConfig, 0, len(current)+1)
 	found := false
@@ -202,6 +213,10 @@ func (r *Registry) Remove(ctx context.Context, alias string) error {
 			rawPrev, current, err := r.loadRawFromRedis(ctx)
 			if err != nil {
 				return err
+			}
+			// If Redis has never been initialized yet (rawPrev == ""), seed initial devices from TV_DEVICES_JSON
+			if rawPrev == "" {
+				current = loadEnvDevices()
 			}
 			updated := make([]DeviceConfig, 0, len(current))
 			removed := false
@@ -237,6 +252,9 @@ func (r *Registry) Remove(ctx context.Context, alias string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current := r.mem
+	if current == nil {
+		current = loadEnvDevices()
+	}
 	updated := make([]DeviceConfig, 0, len(current))
 	removed := false
 	for _, d := range current {
@@ -417,6 +435,17 @@ func (r *Registry) Reset(ctx context.Context) error {
 
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("redis DEL returned HTTP %d", resp.StatusCode)
+		}
+
+		var res struct {
+			Result any    `json:"result"`
+			Error  string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+			return fmt.Errorf("redis response decode failed: %w", err)
+		}
+		if res.Error != "" {
+			return fmt.Errorf("redis error: %s", res.Error)
 		}
 	}
 	return nil

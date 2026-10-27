@@ -509,7 +509,19 @@ func serverFor(rt Runtime) *mcp.Server {
 				if err := reg.Reset(ctx); err != nil {
 					return nil, DevicesManageResult{}, err
 				}
-				return nil, DevicesManageResult{Devices: []device.DeviceConfig{}, Count: 0, Message: "Successfully reset device registry."}, nil
+				list, _ := reg.List(ctx)
+				if len(list) > 0 {
+					return nil, DevicesManageResult{
+						Devices: list,
+						Count:   len(list),
+						Message: fmt.Sprintf("Successfully reset device registry. Reverted to %d default device(s) from TV_DEVICES_JSON.", len(list)),
+					}, nil
+				}
+				return nil, DevicesManageResult{
+					Devices: []device.DeviceConfig{},
+					Count:   0,
+					Message: "Successfully reset device registry (0 devices configured).",
+				}, nil
 			default:
 				return nil, DevicesManageResult{}, fmt.Errorf("unknown action %q (must be list, register, remove, or reset)", input.Action)
 			}
