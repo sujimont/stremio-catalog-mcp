@@ -26,15 +26,18 @@ This repository is an autonomous **Stremio & Debrid AI Agent MCP Server** (`suji
 ### Security & Operational Rules
 
 1. **SSRF Guard**:
-   - Model-supplied external URLs (`page_url`, `url`, ad-hoc `webhook_url` tool arguments) MUST be HTTPS and are validated using `httputil.ValidatePublicURL` before fetching.
-   - All outbound external requests use `httputil.NewSafeClient`, which blocks private, loopback, link-local (cloud metadata `169.254.169.254`), Carrier-Grade NAT (`100.64.0.0/10`), and multicast IP addresses, including across redirects.
-   - Operator-configured webhooks (`TV_WEBHOOK_URL` and registered devices) are trusted to allow local Home Assistant bridges without false-positive SSRF blocks.
-2. **Profile & Key Sanitization**:
+   - Web crawling and stream unmasking allow public HTTP and HTTPS sites while blocking private, loopback, link-local (cloud metadata `169.254.169.254`), Carrier-Grade NAT (`100.64.0.0/10`), and multicast IP addresses via `httputil.ValidatePublicURL`.
+   - Webhooks supplied dynamically by models or registered via `devices_manage` strictly require HTTPS and are validated with `httputil.ValidatePublicWebhookURL`.
+   - Operator-configured webhooks (`TV_WEBHOOK_URL`) are trusted for local Home Assistant bridges without false-positive SSRF blocks.
+2. **Device Registry Security & CAS**:
+   - Device registrations validate IP addresses with `net.ParseIP` and reject shell metacharacters to eliminate ADB injection risks.
+   - Device updates use atomic Redis CAS (`casRedis` EVAL script) to prevent concurrent overwrites.
+3. **Profile & Key Sanitization**:
    - Profile names are strictly sanitized with `NormalizeProfile` (allowing only `[a-z0-9_-]`) to prevent Redis key injection and namespace pollution.
-3. **Input Validation**:
+4. **Input Validation**:
    - IMDb IDs must strictly validate against `^tt\d+(:\d+:\d+)?$`.
    - Media types must be strictly validated as `"movie"` or `"series"`.
-   - IP addresses must validate with `net.ParseIP` and reject shell metacharacters.
+   - IP addresses must validate with `net.ParseIP` and reject shell metacharacters both on registration and after device lookup in `play_on_tv`.
 3. **Secret Hygiene**:
    - Secrets (`TORBOX_API_KEY`, `TMDB_API_KEY`, `STREMIO_AUTH_KEY`, `MCP_API_KEY`) MUST be stored in server environment variables only.
    - Never accept secrets as tool arguments in prompt context. Never extract keys from installed addon transport URLs.
