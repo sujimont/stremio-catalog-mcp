@@ -2,6 +2,8 @@ package device
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -74,6 +76,40 @@ func TestTriggerPlayValidation(t *testing.T) {
 	}
 }
 
+func TestOperatorWebhookNoRedirect(t *testing.T) {
+	ctx := context.Background()
+	redirectReached := false
+
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectReached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetSrv.Close()
+
+	redirectSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetSrv.URL, http.StatusFound)
+	}))
+	defer redirectSrv.Close()
+
+	t.Setenv("TV_WEBHOOK_URL", redirectSrv.URL)
+
+	res, err := TriggerPlay(ctx, nil, PlayOnTVInput{
+		IMDbID:    "tt1375666",
+		MediaType: "movie",
+		Title:     "Inception",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Webhook should not follow redirect (ErrUseLastResponse means status 302, not 2xx)
+	if res.WebhookSent {
+		t.Errorf("operator webhook followed redirect; expected ErrUseLastResponse")
+	}
+	if redirectReached {
+		t.Errorf("target server was reached via redirect; redirects should be stopped")
+	}
+}
+
 func TestDeviceRegistryValidation(t *testing.T) {
 	ctx := context.Background()
 	reg := &Registry{}
@@ -126,5 +162,37 @@ func TestDeviceRegistryValidation(t *testing.T) {
 	}
 	if dev.IP != "192.168.1.55" {
 		t.Errorf("expected IP 192.168.1.55, got %s", dev.IP)
+	}
+}
+
+func TestDeviceRegistryRemovalNoResurrection(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("TV_DEVICES_JSON", `[{"name":"Fallback TV","alias":"fallback","ip":"192.168.1.99"}]`)
+
+	reg := &Registry{}
+
+	// Initial registration
+	err := reg.Register(ctx, DeviceConfig{
+		Name:  "Temporary TV",
+		Alias: "temp",
+		IP:    "192.168.1.10",
+	})
+	if err != nil {
+		t.Fatalf("failed to register device: %v", err)
+	}
+
+	// Remove the device
+	err = reg.Remove(ctx, "temp")
+	if err != nil {
+		t.Fatalf("failed to remove device: %v", err)
+	}
+
+	// List must return empty, NOT resurrect from TV_DEVICES_JSON!
+	list, err := reg.List(ctx)
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected 0 devices after removal, got %d (resurrection bug)", len(list))
 	}
 }

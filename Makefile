@@ -1,9 +1,12 @@
 SHELL := /bin/bash
 
-.PHONY: fmt test vet check docs-install docs-dev docs-check docs-build docs-preview
+.PHONY: fmt fmt-check test vet check docs-install docs-dev docs-check docs-build docs-preview
 
 fmt:
-	@gofmt -w $$(find api pkg -name '*.go')
+	@gofmt -w $$(find api pkg cmd -name '*.go')
+
+fmt-check:
+	@test -z "$$(gofmt -l .)"
 
 test:
 	@go test ./...
@@ -11,7 +14,7 @@ test:
 vet:
 	@go vet ./...
 
-check: test vet
+check: fmt-check test vet
 
 docs-install:
 	@cd docs && bun install --frozen-lockfile

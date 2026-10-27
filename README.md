@@ -41,8 +41,9 @@ The server exposes 13 purpose-built MCP tools across 6 operational domains:
 
 ## Security & Architecture
 
-* **SSRF Protection**: All outbound requests (forum crawling, video unmasking, webhooks) pass through a hardened `SafeHTTPClient` that validates schemes (`https://` only) and blocks loopback, private RFC1918, cloud metadata (`169.254.169.254`), and multicast IP addresses across all DNS lookups and redirects.
-* **Command Injection Immunity**: All media IDs are validated with strict regex (`^tt\d+(:\d+:\d+)?$`), media types against enums, and IPs with `net.ParseIP`.
+* **SSRF Protection**: All outbound requests (forum crawling, video unmasking, model-supplied webhooks) go through a hardened `SafeHTTPClient` that blocks loopback, private RFC1918, cloud metadata (`169.254.169.254`), carrier-grade NAT (`100.64.0.0/10`), and multicast IP addresses across all DNS lookups and redirects. Webhooks supplied by the model or registered via `devices_manage` additionally require HTTPS. Only `TV_WEBHOOK_URL` (set by the operator in Vercel environment variables) is trusted without these restrictions, making it the correct place to configure LAN or Home Assistant addresses.
+* **Command Injection Immunity**: All media IDs are validated with strict regex (`^tt\d+(:\d+:\d+)?$`), media types against enums, and IPs with `net.ParseIP`. Device IPs are validated both at registration time and again at playback time.
+* **Atomic Device Registry**: Device registrations use Redis compare-and-swap (EVAL Lua script) to prevent concurrent overwrites.
 * **Zero Secret Leakage**: API keys (`TORBOX_API_KEY`, `TMDB_API_KEY`, `STREMIO_AUTH_KEY`, `MCP_API_KEY`) live exclusively in server environment variables and are never accepted or emitted in chat context.
 * **Honest Tool Annotations**: Discovery queries carry `readOnlyHint: true`, while mutating operations advertise `readOnlyHint: false` (and `destructiveHint: true` where items can be removed).
 * **Flexible Authentication**: Supports standard `Authorization: Bearer <key>` header as well as `?key=<key>` URL query parameter.
@@ -64,7 +65,7 @@ Deploy as a stateless Go serverless function on Vercel:
    * `STREMIO_AUTH_KEY`: (Optional) Your Stremio account auth key.
    * `TORBOX_API_KEY`: (Optional) TorBox API key for debrid caching and autonomous ingestion.
    * `TMDB_API_KEY`: (Optional) TMDB API key for regional discovery.
-   * `TV_WEBHOOK_URL`: (Optional) Home Assistant webhook URL.
+   * `TV_WEBHOOK_URL`: (Optional) Operator-trusted Home Assistant or Android TV webhook URL. **This is the only way to use a LAN address** (e.g. `http://homeassistant.local:8123/...`). Webhooks registered at runtime via the `devices_manage` tool must be public HTTPS URLs.
 3. Add the MCP endpoint to ChatGPT:
    * **Custom MCP Server URL**: `https://your-deployment.vercel.app/mcp?key=YOUR_MCP_API_KEY`
    * Or use `Authorization: Bearer YOUR_MCP_API_KEY`.

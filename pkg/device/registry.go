@@ -47,28 +47,45 @@ const devicesRedisKey = "stremio-catalog-mcp:v1:devices"
 
 func (r *Registry) List(ctx context.Context) ([]DeviceConfig, error) {
 	if r.RedisURL != "" && r.RedisToken != "" {
-		devices, err := r.loadFromRedis(ctx)
-		if err == nil && len(devices) > 0 {
+		// Propagate Redis errors so callers see "bad token" rather than empty list.
+		raw, devices, err := r.loadRawFromRedis(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// If the key exists in Redis (even if empty "[]"), return devices directly.
+		// A user who removed all devices will have raw == "[]" and len(devices) == 0,
+		// and it must stay empty instead of resurrecting deleted entries from TV_DEVICES_JSON!
+		if raw != "" {
 			return devices, nil
 		}
+		// If the key has never been written to Redis at all (raw == ""), check TV_DEVICES_JSON.
+		if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
+			var list []DeviceConfig
+			if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
+				return list, nil
+			}
+		}
+		return []DeviceConfig{}, nil
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.mem) > 0 {
+	if r.mem != nil {
+		// In-memory cache is initialized (even if empty after removals); do not resurrect.
 		return r.mem, nil
 	}
 
-	// Check if TV_DEVICES_JSON is provided in environment
+	// Check if TV_DEVICES_JSON is provided in environment (no-Redis deployments only, uninitialized).
 	if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
 		var list []DeviceConfig
 		if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
+			r.mem = list
 			return list, nil
 		}
 	}
 
-	// Return empty list if nothing is configured yet
-	return []DeviceConfig{}, nil
+	r.mem = []DeviceConfig{}
+	return r.mem, nil
 }
 
 func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
@@ -289,16 +306,30 @@ func (r *Registry) loadRawFromRedis(ctx context.Context) (string, []DeviceConfig
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("redis GET returned HTTP %d (check UPSTASH_REDIS_REST_TOKEN)", resp.StatusCode)
+	}
+
 	var res struct {
 		Result *string `json:"result"`
+		Error  string  `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil || res.Result == nil {
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", nil, fmt.Errorf("redis response decode failed: %w", err)
+	}
+	if res.Error != "" {
+		return "", nil, fmt.Errorf("redis error: %s", res.Error)
+	}
+	// Null result means the key does not exist yet – empty list, no error.
+	if res.Result == nil {
 		return "", []DeviceConfig{}, nil
 	}
 
 	var devices []DeviceConfig
 	if err := json.Unmarshal([]byte(*res.Result), &devices); err != nil {
-		return *res.Result, []DeviceConfig{}, nil
+		// Stored JSON is corrupt; return an error so the caller does NOT silently
+		// overwrite the value.  The operator must clear the key manually.
+		return "", nil, fmt.Errorf("corrupt device registry in Redis (key %s): %w; clear the key manually to recover", devicesRedisKey, err)
 	}
 	return *res.Result, devices, nil
 }
@@ -320,11 +351,19 @@ func (r *Registry) casRedis(ctx context.Context, previous, next string) (bool, e
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("redis EVAL returned HTTP %d", resp.StatusCode)
+	}
+
 	var res struct {
-		Result any `json:"result"`
+		Result any    `json:"result"`
+		Error  string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return false, err
+		return false, fmt.Errorf("redis response decode failed: %w", err)
+	}
+	if res.Error != "" {
+		return false, fmt.Errorf("redis error: %s", res.Error)
 	}
 	switch v := res.Result.(type) {
 	case float64:

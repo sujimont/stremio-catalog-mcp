@@ -127,8 +127,14 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 			}
 			client = httputil.NewSafeClient(5 * time.Second)
 		} else {
-			// Operator-configured webhook (TV_WEBHOOK_URL): trusted, allows LAN/Home Assistant
-			client = &http.Client{Timeout: 5 * time.Second}
+			// Operator-configured webhook (TV_WEBHOOK_URL): trusted, allows LAN/Home Assistant.
+			// No redirects followed – operator controls the URL so redirect chains are not expected.
+			client = &http.Client{
+				Timeout: 5 * time.Second,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
 		}
 
 		payload := map[string]any{
