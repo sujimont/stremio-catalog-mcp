@@ -1,6 +1,6 @@
 module github.com/amxv/stremio-catalog-mcp
 
-go 1.23
+go 1.26
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
