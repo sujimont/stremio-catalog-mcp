@@ -89,6 +89,47 @@ func (rt Runtime) forProfile(profile string) Runtime {
 }
 
 
+type SyncStatus struct {
+	Synced  bool   `json:"synced"`
+	Message string `json:"message"`
+}
+
+func (rt Runtime) sync(ctx context.Context) SyncStatus {
+	if rt.Account.AuthKey == "" {
+		return SyncStatus{Message: "Saved. Stremio account not linked; install the addon URL manually or configure STREMIO_AUTH_KEY to enable automatic row syncing."}
+	}
+	if rt.Store != nil {
+		lockToken, err := catalog.NewID()
+		if err != nil {
+			return SyncStatus{Message: "Saved but sync lock failed"}
+		}
+		locked, err := rt.Store.AcquireSyncLock(ctx, lockToken)
+		if err != nil {
+			return SyncStatus{Message: "Saved but sync lock unavailable: " + err.Error()}
+		}
+		if !locked {
+			return SyncStatus{Message: "Saved; another account sync is running. Retry with catalogs_update using a sync action."}
+		}
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = rt.Store.ReleaseSyncLock(releaseCtx, lockToken)
+		}()
+	}
+	state, err := rt.Manager.Read(ctx)
+	if err != nil {
+		return SyncStatus{Message: "Saved but state could not be read for sync: " + err.Error()}
+	}
+	url, err := stremio.ManifestURL(rt.BaseURL, rt.FeedToken, state.Revision)
+	if err != nil {
+		return SyncStatus{Message: "Saved but cannot sync: " + err.Error()}
+	}
+	if err := rt.Account.Sync(ctx, state, url); err != nil {
+		return SyncStatus{Message: "Saved but Stremio account sync failed: " + err.Error()}
+	}
+	return SyncStatus{Synced: true, Message: "Catalog manifest synced to Stremio. Restart or refresh the TV app if changes are not immediately visible."}
+}
+
 func readOnlyTool(name, description string) *mcp.Tool {
 	return &mcp.Tool{
 		Name:        name,

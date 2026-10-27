@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -112,28 +111,35 @@ func ValidatePublicURL(rawURL string) error {
 }
 
 // NewSafeClient returns an *http.Client configured with SSRF protection:
-// 1. Validates resolved IPs before connecting via custom DialContext.
+// 1. Validates resolved IPs before connecting via custom DialContext and dials resolved IP to prevent DNS rebinding.
 // 2. Re-validates redirected URLs and restricts redirect count.
 func NewSafeClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
 		KeepAlive: 30 * time.Second,
-		Control: func(network, address string, c syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				host = address
-			}
-			ip := net.ParseIP(host)
-			if ip != nil && IsPrivateOrLocalIP(ip) {
-				return fmt.Errorf("blocked connection to private/local IP: %s", ip)
-			}
-			return nil
-		},
 	}
 
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           dialer.DialContext,
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if IsPrivateOrLocalIP(ip) {
+					return nil, fmt.Errorf("blocked connection to private/local IP: %s", ip)
+				}
+			}
+			if len(ips) > 0 {
+				address = net.JoinHostPort(ips[0].String(), port)
+			}
+			return dialer.DialContext(ctx, network, address)
+		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
