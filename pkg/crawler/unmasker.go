@@ -15,11 +15,11 @@ import (
 )
 
 var (
-	iframeRegex  = regexp.MustCompile(`(?i)<iframe[^>]+src=["']([^"']+)["']`)
+	iframeRegex   = regexp.MustCompile(`(?i)<iframe[^>]+src=["']([^"']+)["']`)
 	videoSrcRegex = regexp.MustCompile(`(?i)<(?:video|source)[^>]+src=["']([^"']+)["']`)
-	m3u8Regex    = regexp.MustCompile(`https?://[^\s"'<>]+\.m3u8[^\s"'<>]*`)
-	mp4Regex     = regexp.MustCompile(`https?://[^\s"'<>]+\.mp4[^\s"'<>]*`)
-	packedRegex  = regexp.MustCompile(`eval\(function\(p,a,c,k,e,?[dr]?\)\{.+?\}\s*\(\s*'(.+?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([^']+)'\.split\('\|'\)`)
+	m3u8Regex     = regexp.MustCompile(`https?://[^\s"'<>]+\.m3u8[^\s"'<>]*`)
+	mp4Regex      = regexp.MustCompile(`https?://[^\s"'<>]+\.mp4[^\s"'<>]*`)
+	packedRegex   = regexp.MustCompile(`eval\(function\(p,a,c,k,e,?[dr]?\)\{.+?\}\s*\(\s*'(.+?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'([^']+)'\.split\('\|'\)`)
 )
 
 type UnmaskResult struct {

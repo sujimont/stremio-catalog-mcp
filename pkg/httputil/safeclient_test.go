@@ -19,10 +19,10 @@ func TestIsPrivateOrLocalIP(t *testing.T) {
 		{"172.31.255.255", true},
 		{"192.168.1.1", true},
 		{"192.168.0.254", true},
-		{"100.64.0.1", true},       // Carrier-Grade NAT (RFC 6598)
-		{"100.127.255.254", true},  // Carrier-Grade NAT (RFC 6598)
-		{"100.128.0.1", false},     // Outside CGNAT
-		{"169.254.169.254", true},  // AWS / cloud metadata IP
+		{"100.64.0.1", true},      // Carrier-Grade NAT (RFC 6598)
+		{"100.127.255.254", true}, // Carrier-Grade NAT (RFC 6598)
+		{"100.128.0.1", false},    // Outside CGNAT
+		{"169.254.169.254", true}, // AWS / cloud metadata IP
 		{"169.254.1.1", true},
 		{"224.0.0.1", true},       // Multicast
 		{"255.255.255.255", true}, // Broadcast
@@ -46,7 +46,6 @@ func TestIsPrivateOrLocalIP(t *testing.T) {
 
 func TestValidatePublicURL(t *testing.T) {
 	blockedURLs := []string{
-		"http://example.com/test",                  // Plain HTTP is blocked
 		"http://127.0.0.1/admin",
 		"https://127.0.0.1/admin",
 		"http://localhost:8080/secret",
@@ -57,6 +56,7 @@ func TestValidatePublicURL(t *testing.T) {
 		"https://10.0.0.5/api",
 		"http://192.168.1.50/tv",
 		"https://192.168.1.50/tv",
+		"http://100.64.0.1/cgnat",
 		"https://100.64.0.1/cgnat",
 		"file:///etc/passwd",
 		"ftp://example.com/test",
@@ -69,8 +69,28 @@ func TestValidatePublicURL(t *testing.T) {
 		}
 	}
 
-	// Valid public HTTPS IP (Cloudflare DNS 1.1.1.1)
+	// Valid public HTTP and HTTPS IPs (Cloudflare DNS 1.1.1.1)
 	if err := ValidatePublicURL("https://1.1.1.1/dns-query"); err != nil {
 		t.Errorf("ValidatePublicURL(\"https://1.1.1.1/dns-query\") expected success, got %v", err)
+	}
+	if err := ValidatePublicURL("http://1.1.1.1/dns-query"); err != nil {
+		t.Errorf("ValidatePublicURL(\"http://1.1.1.1/dns-query\") expected success, got %v", err)
+	}
+}
+
+func TestValidatePublicWebhookURL(t *testing.T) {
+	// Plain HTTP must be rejected for webhooks
+	if err := ValidatePublicWebhookURL("http://1.1.1.1/webhook"); err == nil {
+		t.Errorf("expected error for plain http webhook URL, got nil")
+	}
+
+	// Local or private HTTPS must be rejected
+	if err := ValidatePublicWebhookURL("https://127.0.0.1/webhook"); err == nil {
+		t.Errorf("expected error for local https webhook URL, got nil")
+	}
+
+	// Public HTTPS must be allowed
+	if err := ValidatePublicWebhookURL("https://1.1.1.1/webhook"); err != nil {
+		t.Errorf("expected success for public https webhook URL, got %v", err)
 	}
 }

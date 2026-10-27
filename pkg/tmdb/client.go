@@ -35,17 +35,17 @@ func NewClient(apiKey string) *Client {
 }
 
 type MovieResult struct {
-	ID               int      `json:"id"`
-	Title            string   `json:"title"`
-	Name             string   `json:"name"`
-	OriginalLanguage string   `json:"original_language"`
-	Overview         string   `json:"overview"`
-	PosterPath       string   `json:"poster_path"`
-	ReleaseDate      string   `json:"release_date"`
-	FirstAirDate     string   `json:"first_air_date"`
-	VoteAverage      float64  `json:"vote_average"`
-	GenreIDs         []int    `json:"genre_ids"`
-	IMDbID           string   `json:"imdb_id,omitempty"`
+	ID               int     `json:"id"`
+	Title            string  `json:"title"`
+	Name             string  `json:"name"`
+	OriginalLanguage string  `json:"original_language"`
+	Overview         string  `json:"overview"`
+	PosterPath       string  `json:"poster_path"`
+	ReleaseDate      string  `json:"release_date"`
+	FirstAirDate     string  `json:"first_air_date"`
+	VoteAverage      float64 `json:"vote_average"`
+	GenreIDs         []int   `json:"genre_ids"`
+	IMDbID           string  `json:"imdb_id,omitempty"`
 }
 
 type DiscoverPage struct {
@@ -60,11 +60,11 @@ type ExternalIDs struct {
 }
 
 type DiscoverOptions struct {
-	MediaType     string  `json:"media_type,omitempty"` // movie or series (tv)
-	Language      string  `json:"language,omitempty"`   // e.g. ml, ta, hi, te, ko, en
-	Genre         string  `json:"genre,omitempty"`      // action, thriller, comedy, etc.
+	MediaType     string  `json:"media_type,omitempty"`     // movie or series (tv)
+	Language      string  `json:"language,omitempty"`       // e.g. ml, ta, hi, te, ko, en
+	Genre         string  `json:"genre,omitempty"`          // action, thriller, comedy, etc.
 	WatchProvider string  `json:"watch_provider,omitempty"` // netflix, prime, hotstar
-	Region        string  `json:"region,omitempty"`     // IN, US, etc.
+	Region        string  `json:"region,omitempty"`         // IN, US, etc.
 	Year          int     `json:"year,omitempty"`
 	MinRating     float64 `json:"min_rating,omitempty"`
 	SortBy        string  `json:"sort_by,omitempty"`

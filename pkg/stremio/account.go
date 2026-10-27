@@ -581,4 +581,3 @@ func (a AccountAPI) UninstallAddon(ctx context.Context, addonIDOrURL string) err
 
 	return a.Set(ctx, remaining)
 }
-

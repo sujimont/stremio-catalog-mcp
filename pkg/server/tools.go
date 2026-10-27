@@ -88,7 +88,6 @@ func (rt Runtime) forProfile(profile string) Runtime {
 	}
 }
 
-
 type SyncStatus struct {
 	Synced  bool   `json:"synced"`
 	Message string `json:"message"`

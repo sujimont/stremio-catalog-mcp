@@ -72,15 +72,6 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 	webhookURL := strings.TrimSpace(input.WebhookURL)
 	isModelSuppliedWebhook := webhookURL != ""
 
-	if deviceIP != "" {
-		if ip := net.ParseIP(deviceIP); ip == nil {
-			return nil, fmt.Errorf("invalid device IP address %q", deviceIP)
-		}
-		if strings.ContainsAny(deviceIP, ";|&`$<>\"'\n\r ") {
-			return nil, fmt.Errorf("device IP contains invalid characters")
-		}
-	}
-
 	if reg != nil {
 		targetQuery := input.Device
 		if targetQuery == "" {
@@ -94,7 +85,8 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 			}
 			if webhookURL == "" && dev.WebhookURL != "" {
 				webhookURL = dev.WebhookURL
-				isModelSuppliedWebhook = false
+				// Registered device webhooks must pass public webhook validation
+				isModelSuppliedWebhook = true
 			}
 		} else if input.Device != "" {
 			targetDeviceName = input.Device
@@ -103,9 +95,20 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 		targetDeviceName = input.Device
 	}
 
+	// Operator environment variable is strictly trusted for LAN/Home Assistant
 	if webhookURL == "" && os.Getenv("TV_WEBHOOK_URL") != "" {
 		webhookURL = os.Getenv("TV_WEBHOOK_URL")
 		isModelSuppliedWebhook = false
+	}
+
+	// Validate device IP (both user override and stored device IP) to prevent ADB command injection
+	if deviceIP != "" {
+		if ip := net.ParseIP(deviceIP); ip == nil {
+			return nil, fmt.Errorf("invalid device IP address %q", deviceIP)
+		}
+		if strings.ContainsAny(deviceIP, ";|&`$<>\"'\n\r ") {
+			return nil, fmt.Errorf("device IP contains invalid characters")
+		}
 	}
 
 	// Build safe ADB command
@@ -118,13 +121,13 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 	if webhookURL != "" {
 		var client *http.Client
 		if isModelSuppliedWebhook {
-			// Ad-hoc model supplied webhook: validate against SSRF and dial via SafeClient
-			if err := httputil.ValidatePublicURL(webhookURL); err != nil {
+			// Model-supplied or dynamically registered webhook: validate against SSRF and dial via SafeClient
+			if err := httputil.ValidatePublicWebhookURL(webhookURL); err != nil {
 				return nil, fmt.Errorf("invalid webhook URL (SSRF protected): %w", err)
 			}
 			client = httputil.NewSafeClient(5 * time.Second)
 		} else {
-			// Operator-configured webhook (env var or device registry): trusted, allows LAN/Home Assistant
+			// Operator-configured webhook (TV_WEBHOOK_URL): trusted, allows LAN/Home Assistant
 			client = &http.Client{Timeout: 5 * time.Second}
 		}
 

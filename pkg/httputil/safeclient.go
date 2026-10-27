@@ -67,16 +67,16 @@ func IsPrivateOrLocalIP(ip net.IP) bool {
 	return false
 }
 
-// ValidatePublicURL checks that a URL has a valid https scheme and does not resolve
-// to any internal, private, loopback, or cloud-metadata IP addresses.
+// ValidatePublicURL checks that a URL has a valid http/https scheme and does not resolve
+// to any internal, private, loopback, cloud-metadata, or carrier-grade NAT IP addresses.
 func ValidatePublicURL(rawURL string) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme %q (only https is allowed for external URLs)", u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme %q (only http and https are allowed for external URLs)", u.Scheme)
 	}
 	host := u.Hostname()
 	if host == "" {
@@ -110,6 +110,18 @@ func ValidatePublicURL(rawURL string) error {
 	}
 
 	return nil
+}
+
+// ValidatePublicWebhookURL validates that a webhook URL is public and strictly requires https.
+func ValidatePublicWebhookURL(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if strings.ToLower(u.Scheme) != "https" {
+		return fmt.Errorf("unsupported webhook scheme %q (only https is allowed for webhooks)", u.Scheme)
+	}
+	return ValidatePublicURL(rawURL)
 }
 
 // NewSafeClient returns an *http.Client configured with SSRF protection:
