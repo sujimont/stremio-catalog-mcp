@@ -273,19 +273,21 @@ func modifyVisibility(fields map[string]json.RawMessage, ref RowSelector, visibl
 	}
 	if !visible {
 		filter := supportedHideExtra(fields)
-		if filter == "" {
-			return false, fmt.Errorf("catalog %q/%q cannot safely hide: no supported optional search or genre filter", ref.Type, ref.CatalogID)
-		}
 		original := VisibilitySnapshot{OriginalExtra: bytes.Clone(fields["extra"]), OriginalRequired: bytes.Clone(fields["extraRequired"])}
-		extras, err := extraArray(fields)
-		if err != nil {
-			return false, err
-		}
-		for _, item := range extras {
-			var name string
-			_ = json.Unmarshal(item["name"], &name)
-			if name == filter {
-				item["isRequired"] = json.RawMessage(`true`)
+		extras, _ := extraArray(fields)
+		if filter == "" {
+			filter = "search"
+			extras = append(extras, map[string]json.RawMessage{
+				"name":       json.RawMessage(`"search"`),
+				"isRequired": json.RawMessage(`true`),
+			})
+		} else {
+			for _, item := range extras {
+				var name string
+				_ = json.Unmarshal(item["name"], &name)
+				if name == filter {
+					item["isRequired"] = json.RawMessage(`true`)
+				}
 			}
 		}
 		fields["extra"], _ = json.Marshal(extras)
@@ -611,7 +613,7 @@ func BuildHomeLayout(addons []Descriptor, state catalog.State, visibility Visibi
 			hidden := rowHidden(fields)
 			_, managed := visibility.Records[visibilityKey(ref)]
 			legacy := hidden && !managed && legacyCinemetaRestore(ref, fields)
-			row := HomeRow{ID: ref.CatalogID, Type: ref.Type, Name: name, Position: j, Visible: !hidden, CanHide: !hidden && supportedHideExtra(fields) != "", CanShow: !hidden || managed || legacy}
+			row := HomeRow{ID: ref.CatalogID, Type: ref.Type, Name: name, Position: j, Visible: !hidden, CanHide: !hidden, CanShow: !hidden || managed || legacy}
 			if hidden {
 				switch {
 				case managed:
