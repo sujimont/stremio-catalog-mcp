@@ -70,6 +70,7 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 	targetDeviceName := "Default TV"
 	deviceIP := strings.TrimSpace(input.DeviceIP)
 	webhookURL := strings.TrimSpace(input.WebhookURL)
+	isModelSuppliedWebhook := webhookURL != ""
 
 	if deviceIP != "" {
 		if ip := net.ParseIP(deviceIP); ip == nil {
@@ -91,8 +92,9 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 			if deviceIP == "" {
 				deviceIP = dev.IP
 			}
-			if webhookURL == "" {
+			if webhookURL == "" && dev.WebhookURL != "" {
 				webhookURL = dev.WebhookURL
+				isModelSuppliedWebhook = false
 			}
 		} else if input.Device != "" {
 			targetDeviceName = input.Device
@@ -101,8 +103,9 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 		targetDeviceName = input.Device
 	}
 
-	if webhookURL == "" {
+	if webhookURL == "" && os.Getenv("TV_WEBHOOK_URL") != "" {
 		webhookURL = os.Getenv("TV_WEBHOOK_URL")
+		isModelSuppliedWebhook = false
 	}
 
 	// Build safe ADB command
@@ -113,9 +116,18 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 
 	webhookSent := false
 	if webhookURL != "" {
-		if err := httputil.ValidatePublicURL(webhookURL); err != nil {
-			return nil, fmt.Errorf("invalid webhook URL (SSRF protected): %w", err)
+		var client *http.Client
+		if isModelSuppliedWebhook {
+			// Ad-hoc model supplied webhook: validate against SSRF and dial via SafeClient
+			if err := httputil.ValidatePublicURL(webhookURL); err != nil {
+				return nil, fmt.Errorf("invalid webhook URL (SSRF protected): %w", err)
+			}
+			client = httputil.NewSafeClient(5 * time.Second)
+		} else {
+			// Operator-configured webhook (env var or device registry): trusted, allows LAN/Home Assistant
+			client = &http.Client{Timeout: 5 * time.Second}
 		}
+
 		payload := map[string]any{
 			"media_type":    mediaType,
 			"imdb_id":       cleanID,
@@ -131,8 +143,7 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(data))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
-			safeClient := httputil.NewSafeClient(5 * time.Second)
-			resp, err := safeClient.Do(req)
+			resp, err := client.Do(req)
 			if err == nil {
 				_ = resp.Body.Close()
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {

@@ -19,6 +19,8 @@ var (
 		mustParseCIDR("10.0.0.0/8"),
 		mustParseCIDR("172.16.0.0/12"),
 		mustParseCIDR("192.168.0.0/16"),
+		// IPv4 Carrier-Grade NAT (RFC 6598, 100.64.0.0/10)
+		mustParseCIDR("100.64.0.0/10"),
 		// IPv4 link-local (cloud metadata services, AWS 169.254.169.254)
 		mustParseCIDR("169.254.0.0/16"),
 		// IPv4 broadcast / unspecified
@@ -65,7 +67,7 @@ func IsPrivateOrLocalIP(ip net.IP) bool {
 	return false
 }
 
-// ValidatePublicURL checks that a URL has a valid http/https scheme and does not resolve
+// ValidatePublicURL checks that a URL has a valid https scheme and does not resolve
 // to any internal, private, loopback, or cloud-metadata IP addresses.
 func ValidatePublicURL(rawURL string) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
@@ -73,8 +75,8 @@ func ValidatePublicURL(rawURL string) error {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("unsupported URL scheme %q (only http and https are allowed)", u.Scheme)
+	if scheme != "https" {
+		return fmt.Errorf("unsupported URL scheme %q (only https is allowed for external URLs)", u.Scheme)
 	}
 	host := u.Hostname()
 	if host == "" {

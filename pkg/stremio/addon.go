@@ -62,14 +62,7 @@ func BuildManifest(state catalog.State) Manifest {
 }
 
 func NormalizeProfile(p string) string {
-	p = strings.ToLower(strings.TrimSpace(p))
-	var clean strings.Builder
-	for _, r := range p {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			clean.WriteRune(r)
-		}
-	}
-	return clean.String()
+	return catalog.NormalizeProfile(p)
 }
 
 func ProfileManifestURL(baseURL, feedToken, profile string, revisions ...int64) (string, error) {
@@ -148,8 +141,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	profile = NormalizeProfile(profile)
 	mgr := h.Manager
-	if profile != "" && h.ManagerForProfile != nil {
+	if profile != "" && profile != "default" && h.ManagerForProfile != nil {
 		mgr = h.ManagerForProfile(profile)
 	}
 	state, err := mgr.Read(r.Context())

@@ -26,9 +26,12 @@ This repository is an autonomous **Stremio & Debrid AI Agent MCP Server** (`suji
 ### Security & Operational Rules
 
 1. **SSRF Guard**:
-   - Any external URL (`page_url`, `url`, `webhook_url`) MUST be validated using `httputil.ValidatePublicURL` before fetching.
-   - All outbound HTTP requests use `httputil.NewSafeClient`, which blocks private, loopback, link-local (cloud metadata `169.254.169.254`), and multicast IP addresses, including across redirects.
-2. **Input Validation**:
+   - Model-supplied external URLs (`page_url`, `url`, ad-hoc `webhook_url` tool arguments) MUST be HTTPS and are validated using `httputil.ValidatePublicURL` before fetching.
+   - All outbound external requests use `httputil.NewSafeClient`, which blocks private, loopback, link-local (cloud metadata `169.254.169.254`), Carrier-Grade NAT (`100.64.0.0/10`), and multicast IP addresses, including across redirects.
+   - Operator-configured webhooks (`TV_WEBHOOK_URL` and registered devices) are trusted to allow local Home Assistant bridges without false-positive SSRF blocks.
+2. **Profile & Key Sanitization**:
+   - Profile names are strictly sanitized with `NormalizeProfile` (allowing only `[a-z0-9_-]`) to prevent Redis key injection and namespace pollution.
+3. **Input Validation**:
    - IMDb IDs must strictly validate against `^tt\d+(:\d+:\d+)?$`.
    - Media types must be strictly validated as `"movie"` or `"series"`.
    - IP addresses must validate with `net.ParseIP` and reject shell metacharacters.

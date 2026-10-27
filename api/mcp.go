@@ -13,6 +13,7 @@ import (
 func Handler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("resource") != "" {
 		mgrForProfile := func(p string) catalog.Manager {
+			p = catalog.NormalizeProfile(p)
 			store := &catalog.RedisStore{
 				URL:   os.Getenv("UPSTASH_REDIS_REST_URL"),
 				Token: os.Getenv("UPSTASH_REDIS_REST_TOKEN"),

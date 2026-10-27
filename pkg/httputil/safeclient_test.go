@@ -7,8 +7,8 @@ import (
 
 func TestIsPrivateOrLocalIP(t *testing.T) {
 	tests := []struct {
-		ip       string
-		blocked  bool
+		ip      string
+		blocked bool
 	}{
 		{"127.0.0.1", true},
 		{"127.1.2.3", true},
@@ -19,7 +19,10 @@ func TestIsPrivateOrLocalIP(t *testing.T) {
 		{"172.31.255.255", true},
 		{"192.168.1.1", true},
 		{"192.168.0.254", true},
-		{"169.254.169.254", true}, // AWS / cloud metadata IP
+		{"100.64.0.1", true},       // Carrier-Grade NAT (RFC 6598)
+		{"100.127.255.254", true},  // Carrier-Grade NAT (RFC 6598)
+		{"100.128.0.1", false},     // Outside CGNAT
+		{"169.254.169.254", true},  // AWS / cloud metadata IP
 		{"169.254.1.1", true},
 		{"224.0.0.1", true},       // Multicast
 		{"255.255.255.255", true}, // Broadcast
@@ -43,11 +46,18 @@ func TestIsPrivateOrLocalIP(t *testing.T) {
 
 func TestValidatePublicURL(t *testing.T) {
 	blockedURLs := []string{
+		"http://example.com/test",                  // Plain HTTP is blocked
 		"http://127.0.0.1/admin",
+		"https://127.0.0.1/admin",
 		"http://localhost:8080/secret",
+		"https://localhost:8080/secret",
 		"http://169.254.169.254/latest/meta-data/",
+		"https://169.254.169.254/latest/meta-data/",
 		"http://10.0.0.5/api",
+		"https://10.0.0.5/api",
 		"http://192.168.1.50/tv",
+		"https://192.168.1.50/tv",
+		"https://100.64.0.1/cgnat",
 		"file:///etc/passwd",
 		"ftp://example.com/test",
 		"gopher://example.com",
@@ -57,5 +67,10 @@ func TestValidatePublicURL(t *testing.T) {
 		if err := ValidatePublicURL(u); err == nil {
 			t.Errorf("ValidatePublicURL(%q) expected error, got nil", u)
 		}
+	}
+
+	// Valid public HTTPS IP (Cloudflare DNS 1.1.1.1)
+	if err := ValidatePublicURL("https://1.1.1.1/dns-query"); err != nil {
+		t.Errorf("ValidatePublicURL(\"https://1.1.1.1/dns-query\") expected success, got %v", err)
 	}
 }
