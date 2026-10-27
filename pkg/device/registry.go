@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -85,12 +86,14 @@ func loadEnvDevices() []DeviceConfig {
 	}
 	var rawList []DeviceConfig
 	if err := json.Unmarshal([]byte(envJSON), &rawList); err != nil {
+		log.Printf("[device] TV_DEVICES_JSON unmarshal error: %v", err)
 		return nil
 	}
 	validList := make([]DeviceConfig, 0, len(rawList))
 	for _, dev := range rawList {
 		d := dev
 		if err := validateDeviceConfig(&d); err != nil {
+			log.Printf("[device] TV_DEVICES_JSON: skipping invalid entry %q (%s): %v", dev.Name, dev.Alias, err)
 			continue // skip invalid entries from TV_DEVICES_JSON
 		}
 		validList = append(validList, d)
