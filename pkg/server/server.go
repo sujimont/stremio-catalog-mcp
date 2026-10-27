@@ -18,6 +18,7 @@ var transport = mcp.NewStreamableHTTPHandler(
 )
 
 // Handler enforces the private MCP connection key on every request.
+// Accepts key via Authorization: Bearer <key> header (recommended) or ?key=<key> query parameter.
 // A missing server key always fails closed, including during deployments.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,8 +33,14 @@ func Handler() http.Handler {
 			return
 		}
 
-		keys := r.URL.Query()["key"]
-		if len(keys) != 1 || !validKey(secret, keys[0]) {
+		var suppliedKey string
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			suppliedKey = strings.TrimSpace(auth[7:])
+		} else if keys := r.URL.Query()["key"]; len(keys) == 1 {
+			suppliedKey = keys[0]
+		}
+
+		if suppliedKey == "" || !validKey(secret, suppliedKey) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

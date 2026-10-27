@@ -33,8 +33,16 @@ type Runtime struct {
 }
 
 func runtimeFromEnv() Runtime {
-	store := &catalog.RedisStore{URL: os.Getenv("UPSTASH_REDIS_REST_URL"), Token: os.Getenv("UPSTASH_REDIS_REST_TOKEN"), Key: "stremio-catalog-mcp:v1:catalogs"}
-	visibilityStore := &catalog.RedisStore{URL: store.URL, Token: store.Token, Key: store.Key + ":home-visibility"}
+	store := &catalog.RedisStore{
+		URL:   os.Getenv("UPSTASH_REDIS_REST_URL"),
+		Token: os.Getenv("UPSTASH_REDIS_REST_TOKEN"),
+		Key:   catalog.RedisCatalogKey(""),
+	}
+	visibilityStore := &catalog.RedisStore{
+		URL:   store.URL,
+		Token: store.Token,
+		Key:   catalog.RedisVisibilityKey(""),
+	}
 	account := stremio.AccountAPI{AuthKey: os.Getenv("STREMIO_AUTH_KEY")}
 	account.BeforeReplace = func(ctx context.Context, addons []stremio.Descriptor) error {
 		raw, err := json.Marshal(addons)
@@ -63,9 +71,9 @@ func (rt Runtime) forProfile(profile string) Runtime {
 	if profile == "" || profile == "default" {
 		return rt
 	}
-	key := "stremio-catalog-mcp:v1:catalogs:" + profile
+	key := catalog.RedisCatalogKey(profile)
 	store := &catalog.RedisStore{URL: rt.Store.URL, Token: rt.Store.Token, Key: key}
-	visibilityStore := &catalog.RedisStore{URL: store.URL, Token: store.Token, Key: key + ":home-visibility"}
+	visibilityStore := &catalog.RedisStore{URL: store.URL, Token: store.Token, Key: catalog.RedisVisibilityKey(profile)}
 	return Runtime{
 		Manager:         catalog.Manager{Store: store, Resolver: rt.Manager.Resolver},
 		Account:         rt.Account,
@@ -81,57 +89,61 @@ func (rt Runtime) forProfile(profile string) Runtime {
 }
 
 type SyncStatus struct {
-	Synced  bool   `json:"synced"`
-	Message string `json:"message"`
+	PushedToAccount bool   `json:"pushed_to_account"`
+	Message         string `json:"message"`
 }
 
-func (rt Runtime) sync(ctx context.Context) SyncStatus {
+func (rt Runtime) syncAccount(ctx context.Context) SyncStatus {
 	if rt.Account.AuthKey == "" {
 		return SyncStatus{Message: "Saved. Stremio account not linked; install the addon URL manually or configure STREMIO_AUTH_KEY to enable automatic row syncing."}
 	}
-	if rt.Store != nil {
-		lockToken, err := catalog.NewID()
-		if err != nil {
-			return SyncStatus{Message: "Saved but sync lock failed"}
-		}
-		locked, err := rt.Store.AcquireSyncLock(ctx, lockToken)
-		if err != nil {
-			return SyncStatus{Message: "Saved but sync lock unavailable: " + err.Error()}
-		}
-		if !locked {
-			return SyncStatus{Message: "Saved; another account sync is running. Retry with catalogs_update using a sync action."}
-		}
-		defer func() {
-			releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_ = rt.Store.ReleaseSyncLock(releaseCtx, lockToken)
-		}()
+	if err := rt.Account.Sync(ctx, rt.Manager); err != nil {
+		return SyncStatus{Message: fmt.Sprintf("Saved, but Stremio account sync failed: %s. Use action='sync' to retry.", err)}
 	}
-	state, err := rt.Manager.Read(ctx)
-	if err != nil {
-		return SyncStatus{Message: "Saved but state could not be read for sync: " + err.Error()}
-	}
-	url, err := stremio.ManifestURL(rt.BaseURL, rt.FeedToken, state.Revision)
-	if err != nil {
-		return SyncStatus{Message: "Saved but cannot sync: " + err.Error()}
-	}
-	if err := rt.Account.Sync(ctx, state, url); err != nil {
-		return SyncStatus{Message: "Saved but Stremio account sync failed: " + err.Error()}
-	}
-	return SyncStatus{Synced: true, Message: "Catalog manifest synced to Stremio. Restart or refresh the TV app if changes are not immediately visible."}
+	return SyncStatus{PushedToAccount: true, Message: "Saved and synced to your Stremio account. Open Stremio to see the updated rows."}
 }
 
-func makeServer() *mcp.Server { return serverFor(runtimeFromEnv()) }
+type CatalogsGetInput struct {
+	Profile         string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, suji, default)"`
+	RowID           string `json:"row_id,omitempty" jsonschema:"Optional catalog row ID; returns this row with its ordered titles and poster URLs"`
+	IncludeTitles   bool   `json:"include_titles,omitempty" jsonschema:"Include all titles and poster URLs when listing multiple rows; default is a compact summary"`
+	IncludeInstall  bool   `json:"include_install_url,omitempty" jsonschema:"Include the private Stremio/Nuvio addon install URL for this profile"`
+	IncludePruned   bool   `json:"include_pruned,omitempty" jsonschema:"Include archived/pruned watched titles"`
+}
 
-// catalogTool centralizes the MCP metadata contract. These annotations are
-// advisory discovery hints, not authorization controls.
-func catalogTool(name, description string) *mcp.Tool {
+type CatalogsGetResult struct {
+	Profile    string                   `json:"profile,omitempty"`
+	Revision   int                      `json:"revision"`
+	Rows       []catalog.CatalogSummary `json:"rows"`
+	InstallURL string                   `json:"install_url,omitempty"`
+	Warning    string                   `json:"warning,omitempty"`
+}
+
+type CatalogsUpdateResult struct {
+	Profile    string                   `json:"profile,omitempty"`
+	Revision   int                      `json:"revision"`
+	Rows       []catalog.CatalogSummary `json:"rows"`
+	InstallURL string                   `json:"install_url,omitempty"`
+	Sync       SyncStatus               `json:"sync"`
+}
+
+func readOnlyTool(name, description string) *mcp.Tool {
 	return &mcp.Tool{
 		Name:        name,
 		Description: description,
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint: true,
-			// Do not set OpenWorldHint on any tool.
+		},
+	}
+}
+
+func actionTool(name, description string, destructive bool) *mcp.Tool {
+	return &mcp.Tool{
+		Name:        name,
+		Description: description,
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:    false,
+			DestructiveHint: &destructive,
 		},
 	}
 }
@@ -148,13 +160,12 @@ type WatchHistoryResult struct {
 }
 
 type StreamAvailabilityInput struct {
-	IMDbID       string   `json:"imdb_id,omitempty" jsonschema:"Single IMDb ID (e.g. tt1375666, or tt37539312:2:1 for series season/episode)"`
-	IMDbIDs      []string `json:"imdb_ids,omitempty" jsonschema:"Optional list of up to 50 IMDb IDs to batch-check all at once in parallel"`
-	Title        string   `json:"title,omitempty" jsonschema:"Optional title to verify stream filename match"`
-	MediaType    string   `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
-	Season       int      `json:"season,omitempty" jsonschema:"Season number for series (e.g. 2 for Season 2, defaults to 1)"`
-	Episode      int      `json:"episode,omitempty" jsonschema:"Episode number for series (e.g. 1 for Episode 1, defaults to 1)"`
-	TorboxAPIKey string   `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override to verify instant cloud caching"`
+	IMDbID    string   `json:"imdb_id,omitempty" jsonschema:"Single IMDb ID (e.g. tt1375666, or tt37539312:2:1 for series season/episode)"`
+	IMDbIDs   []string `json:"imdb_ids,omitempty" jsonschema:"Optional list of up to 50 IMDb IDs to batch-check all at once in parallel"`
+	Title     string   `json:"title,omitempty" jsonschema:"Optional title to verify stream filename match"`
+	MediaType string   `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Season    int      `json:"season,omitempty" jsonschema:"Season number for series (e.g. 2 for Season 2, defaults to 1)"`
+	Episode   int      `json:"episode,omitempty" jsonschema:"Episode number for series (e.g. 1 for Episode 1, defaults to 1)"`
 }
 
 type TMDBDiscoverInput struct {
@@ -167,7 +178,6 @@ type TMDBDiscoverInput struct {
 	MinRating     float64 `json:"min_rating,omitempty" jsonschema:"Minimum TMDB rating (e.g. 7.0)"`
 	SortBy        string  `json:"sort_by,omitempty" jsonschema:"Sort order (default popularity.desc, or vote_average.desc)"`
 	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum results to return (1-50, default 10)"`
-	TMDBAPIKey   string  `json:"tmdb_api_key,omitempty" jsonschema:"Optional TMDB API key override"`
 }
 
 type TMDBDiscoverResult struct {
@@ -177,11 +187,10 @@ type TMDBDiscoverResult struct {
 }
 
 type TMDBSimilarInput struct {
-	IMDbID      string `json:"imdb_id,omitempty" jsonschema:"IMDb ID of movie/series to find recommendations for"`
-	Title       string `json:"title,omitempty" jsonschema:"Title of movie/series to find recommendations for"`
-	MediaType   string `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
-	Limit       int    `json:"limit,omitempty" jsonschema:"Maximum results to return (1-50, default 10)"`
-	TMDBAPIKey string `json:"tmdb_api_key,omitempty" jsonschema:"Optional TMDB API key override"`
+	IMDbID    string `json:"imdb_id,omitempty" jsonschema:"IMDb ID of movie/series to find recommendations for"`
+	Title     string `json:"title,omitempty" jsonschema:"Title of movie/series to find recommendations for"`
+	MediaType string `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum results to return (1-50, default 10)"`
 }
 
 type TMDBSimilarResult struct {
@@ -191,22 +200,20 @@ type TMDBSimilarResult struct {
 }
 
 type MediaCrawlInput struct {
-	Title        string  `json:"title,omitempty" jsonschema:"Movie or show title to crawl"`
-	IMDbID       string  `json:"imdb_id,omitempty" jsonschema:"Optional IMDb ID for precision"`
-	MediaType    string  `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
-	Season       int     `json:"season,omitempty" jsonschema:"Season number for series (e.g. 2 for Season 2)"`
-	Episode      int     `json:"episode,omitempty" jsonschema:"Episode number for series (default 1)"`
-	Magnet       string  `json:"magnet,omitempty" jsonschema:"Direct magnet URI (magnet:?xt=...) to verify and ingest immediately to TorBox"`
-	PageURL      string  `json:"page_url,omitempty" jsonschema:"Torrent forum or webpage URL (e.g. 1TamilMV topic) to crawl, extract magnets, and ingest best release to TorBox"`
-	MaxSizeGB    float64 `json:"max_size_gb,omitempty" jsonschema:"Maximum file size in GB to ingest to TorBox (default 10.0 GB per movie or episode)"`
-	AutoIngest   *bool   `json:"auto_ingest,omitempty" jsonschema:"Automatically ingest best torrent/stream to TorBox (default true)"`
-	TorboxAPIKey string  `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override"`
+	Title      string  `json:"title,omitempty" jsonschema:"Movie or show title to crawl"`
+	IMDbID     string  `json:"imdb_id,omitempty" jsonschema:"Optional IMDb ID for precision"`
+	MediaType  string  `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Season     int     `json:"season,omitempty" jsonschema:"Season number for series (e.g. 2 for Season 2)"`
+	Episode    int     `json:"episode,omitempty" jsonschema:"Episode number for series (default 1)"`
+	Magnet     string  `json:"magnet,omitempty" jsonschema:"Direct magnet URI (magnet:?xt=...) to verify and ingest immediately to TorBox"`
+	PageURL    string  `json:"page_url,omitempty" jsonschema:"Torrent forum or webpage URL (e.g. 1TamilMV topic) to crawl, extract magnets, and ingest best release to TorBox"`
+	MaxSizeGB  float64 `json:"max_size_gb,omitempty" jsonschema:"Maximum file size in GB to ingest to TorBox (default 10.0 GB per movie or episode)"`
+	AutoIngest *bool   `json:"auto_ingest,omitempty" jsonschema:"Automatically ingest best torrent/stream to TorBox (default true)"`
 }
 
 type StreamUnmaskInput struct {
 	URL              string `json:"url" jsonschema:"Masked webpage or embed player URL to unmask"`
 	AutoIngestTorbox bool   `json:"auto_ingest_torbox,omitempty" jsonschema:"Automatically send unmasked video URL to TorBox WebDL"`
-	TorboxAPIKey     string `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override"`
 }
 
 type StreamUnmaskResult struct {
@@ -247,24 +254,24 @@ type DevicesManageResult struct {
 }
 
 func serverFor(rt Runtime) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "stremio-catalog-mcp", Version: "0.5.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "stremio-catalog-mcp", Version: "0.6.0"}, nil)
 
 	// Tool 1: catalogs_get
-	mcp.AddTool(s, catalogTool("catalogs_get", "Read custom catalog rows. Supports optional profile parameter (e.g. kids, suji, default). With no parameters return compact row summaries; pass row_id for one row's ordered titles including saved poster URLs, or include_titles=true for every row's titles. include_install_url=true returns the private addon URL for Stremio/Nuvio. include_pruned=true includes archived watched titles."),
+	mcp.AddTool(s, readOnlyTool("catalogs_get", "Read custom catalog rows and their ordered titles. Supports profile parameter for multi-profile isolation."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input CatalogsGetInput) (*mcp.CallToolResult, CatalogsGetResult, error) {
 			result, err := rt.catalogsGet(ctx, input)
 			return nil, result, err
 		})
 
 	// Tool 2: catalogs_update
-	mcp.AddTool(s, catalogTool("catalogs_update", "Batch changes to custom catalog CONTENT: actions create (name, type, optional titles, optional auto_prune), edit (row_id plus name/add_titles/remove_title_ids/replace_titles/move_titles/auto_prune/restore_title_ids/prune_title_ids), delete (row_id), sync (retry account sync). Supports profile parameter for Nuvio/multi-profile isolation. restore_title_ids restores archived titles; prune_title_ids reversibly archives watched titles."),
+	mcp.AddTool(s, actionTool("catalogs_update", "Batch mutate custom catalog rows: create, edit, delete, reorder titles, or prune watched items with CAS safety.", true),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input catalog.BatchInput) (*mcp.CallToolResult, CatalogsUpdateResult, error) {
 			result, err := rt.catalogsUpdate(ctx, input)
 			return nil, result, err
 		})
 
 	// Tool 3: watch_history_get
-	mcp.AddTool(s, catalogTool("watch_history_get", "Fetch recently watched movies and series from your Stremio library. Returns titles, IMDb IDs, poster URLs, and watch progress. Perfect for generating 'Because You Watched' recommendations or auto-pruning."),
+	mcp.AddTool(s, readOnlyTool("watch_history_get", "Fetch recently watched movies and series with progress percent and completion status from Stremio library."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input WatchHistoryInput) (*mcp.CallToolResult, WatchHistoryResult, error) {
 			if rt.Account.AuthKey == "" {
 				return nil, WatchHistoryResult{Message: "Stremio account is not linked. Configure STREMIO_AUTH_KEY to read watch history."}, nil
@@ -277,32 +284,25 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 4: home_layout_get
-	mcp.AddTool(s, catalogTool("home_layout_get", "Read the live Stremio Home layout: installed addon order, all catalogs including hidden rows, and supported visibility controls. Excludes private addon URLs. If the account is not linked, shows custom rows only."),
+	mcp.AddTool(s, readOnlyTool("home_layout_get", "List all installed Stremio addons and catalog rows with Home screen visibility and order."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, stremio.HomeLayout, error) {
 			view, err := rt.homeLayoutGet(ctx)
 			return nil, view, err
 		})
 
 	// Tool 5: home_layout_update
-	mcp.AddTool(s, catalogTool("home_layout_update", "Batch hide/show Home rows, reorder rows within any installed addon, and move complete addons. Provide exact IDs from home_layout_get. Use dry_run=true to preview. Preserves stream addons and backs up the account before saving."),
+	mcp.AddTool(s, actionTool("home_layout_update", "Batch show/hide rows or reorder catalog rows and addons on the Stremio Home screen. Supports dry_run.", false),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input stremio.HomeUpdateInput) (*mcp.CallToolResult, HomeUpdateResult, error) {
 			result, err := rt.homeLayoutUpdate(ctx, input)
 			return nil, result, err
 		})
 
 	// Tool 6: stream_availability_check
-	mcp.AddTool(s, catalogTool("stream_availability_check", "⚡ Stream Availability Pre-Checker: verify active stream count, highest quality (4K/1080p/720p), max seeders, and instant TorBox cloud-cached status for any movie or series before adding to a catalog. Supports single imdb_id or batch imdb_ids up to 50 titles at once."),
+	mcp.AddTool(s, readOnlyTool("stream_availability_check", "Verify torrent stream availability, quality, seeders, and TorBox cache status for a movie or TV series."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input StreamAvailabilityInput) (*mcp.CallToolResult, streams.StreamAvailabilityResult, error) {
-			torboxKey := input.TorboxAPIKey
-			if torboxKey == "" {
-				torboxKey = rt.TorboxAPIKey
-			}
-			streamBase, discoveredTBKey := rt.Account.GetTorrentioStreamBase(ctx)
-			if torboxKey == "" && discoveredTBKey != "" {
-				torboxKey = discoveredTBKey
-			}
+			streamBase := rt.Account.GetTorrentioStreamBase(ctx)
 			if len(input.IMDbIDs) > 0 {
-				result, err := streams.CheckBatchAvailability(ctx, input.MediaType, input.IMDbIDs, torboxKey, streamBase)
+				result, err := streams.CheckBatchAvailability(ctx, input.MediaType, input.IMDbIDs, rt.TorboxAPIKey, streamBase)
 				return nil, result, err
 			}
 			imdbID := input.IMDbID
@@ -317,18 +317,14 @@ func serverFor(rt Runtime) *mcp.Server {
 				}
 				imdbID = fmt.Sprintf("%s:%d:%d", imdbID, s, ep)
 			}
-			result, err := streams.CheckAvailability(ctx, input.MediaType, imdbID, input.Title, torboxKey, streamBase)
+			result, err := streams.CheckAvailability(ctx, input.MediaType, imdbID, input.Title, rt.TorboxAPIKey, streamBase)
 			return nil, result, err
 		})
 
 	// Tool 7: tmdb_discover
-	mcp.AddTool(s, catalogTool("tmdb_discover", "🌍 TMDB Deep Discovery & Regional Cinema: discover high-rated titles by regional language (Malayalam, Tamil, Hindi, Telugu, Korean, etc.), OTT provider (Netflix, Prime, Hotstar), genre, year, and min rating."),
+	mcp.AddTool(s, readOnlyTool("tmdb_discover", "Discover movies and TV series by regional language, genre, streaming provider, year, or rating."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input TMDBDiscoverInput) (*mcp.CallToolResult, TMDBDiscoverResult, error) {
-			apiKey := input.TMDBAPIKey
-			if apiKey == "" {
-				apiKey = rt.TMDBAPIKey
-			}
-			client := tmdb.NewClient(apiKey)
+			client := tmdb.NewClient(rt.TMDBAPIKey)
 			items, err := client.Discover(ctx, tmdb.DiscoverOptions{
 				MediaType:     input.MediaType,
 				Language:      input.Language,
@@ -344,20 +340,16 @@ func serverFor(rt Runtime) *mcp.Server {
 				return nil, TMDBDiscoverResult{}, err
 			}
 			msg := fmt.Sprintf("Found %d titles matching discovery criteria.", len(items))
-			if apiKey == "" {
+			if rt.TMDBAPIKey == "" {
 				msg += " (Retrieved via Cinemeta catalog. Configure TMDB_API_KEY in Vercel to enable regional languages and OTT filters)."
 			}
 			return nil, TMDBDiscoverResult{Items: items, Count: len(items), Message: msg}, nil
 		})
 
 	// Tool 8: tmdb_similar
-	mcp.AddTool(s, catalogTool("tmdb_similar", "🎬 Similar Movie & TV Deep Dive: find similar and recommended movies/series for any title or IMDb ID, ready to create dynamic Stremio or Nuvio rows."),
+	mcp.AddTool(s, readOnlyTool("tmdb_similar", "Find similar or recommended movies and TV series for a given title or IMDb ID."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input TMDBSimilarInput) (*mcp.CallToolResult, TMDBSimilarResult, error) {
-			apiKey := input.TMDBAPIKey
-			if apiKey == "" {
-				apiKey = rt.TMDBAPIKey
-			}
-			client := tmdb.NewClient(apiKey)
+			client := tmdb.NewClient(rt.TMDBAPIKey)
 			items, err := client.Similar(ctx, tmdb.SimilarOptions{
 				IMDbID:    input.IMDbID,
 				Title:     input.Title,
@@ -372,16 +364,9 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 9: media_crawl_and_ingest
-	mcp.AddTool(s, catalogTool("media_crawl_and_ingest", "🚀 Autonomous TorBox Torrent & Forum Crawler: crawls torrent forum pages (e.g. 1TamilMV topics), accepts direct magnet links, or searches torrents by title/IMDb under 10GB limit (configurable via max_size_gb), verifies TorBox cache, and automatically ingests the best stream to TorBox so it's ready to stream."),
+	mcp.AddTool(s, actionTool("media_crawl_and_ingest", "Crawl torrent forum pages, ingest direct magnets, or search torrents under size limit and ingest to TorBox.", false),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input MediaCrawlInput) (*mcp.CallToolResult, *crawler.CrawlResult, error) {
-			torboxKey := input.TorboxAPIKey
-			if torboxKey == "" {
-				torboxKey = rt.TorboxAPIKey
-			}
-			streamBase, discoveredTBKey := rt.Account.GetTorrentioStreamBase(ctx)
-			if torboxKey == "" && discoveredTBKey != "" {
-				torboxKey = discoveredTBKey
-			}
+			streamBase := rt.Account.GetTorrentioStreamBase(ctx)
 			autoIngest := true
 			if input.AutoIngest != nil {
 				autoIngest = *input.AutoIngest
@@ -394,7 +379,7 @@ func serverFor(rt Runtime) *mcp.Server {
 				Episode:    input.Episode,
 				Magnet:     input.Magnet,
 				PageURL:    input.PageURL,
-				TorboxKey:  torboxKey,
+				TorboxKey:  rt.TorboxAPIKey,
 				MaxSizeGB:  input.MaxSizeGB,
 				AutoIngest: autoIngest,
 				StreamBase: streamBase,
@@ -404,7 +389,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 10: stream_unmask
-	mcp.AddTool(s, catalogTool("stream_unmask", "🔓 Movierulz Stream Unmasker: resolves masked embed players and streaming webpages into raw, directly playable .mp4 or .m3u8 URLs, with optional TorBox WebDL ingestion."),
+	mcp.AddTool(s, actionTool("stream_unmask", "Resolve masked embed players and streaming webpages into direct video URLs with optional TorBox WebDL ingestion.", false),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input StreamUnmaskInput) (*mcp.CallToolResult, StreamUnmaskResult, error) {
 			unmasked, err := crawler.UnmaskStream(ctx, nil, input.URL)
 			if err != nil {
@@ -417,14 +402,12 @@ func serverFor(rt Runtime) *mcp.Server {
 				RefererHeader: unmasked.RefererHeader,
 				Message:       "Successfully unmasked raw " + unmasked.StreamType + " video stream.",
 			}
-			tKey := input.TorboxAPIKey
-			if tKey == "" {
-				tKey = rt.TorboxAPIKey
-			}
-			if input.AutoIngestTorbox && tKey != "" {
-				tb := torbox.NewClient(tKey)
+			if input.AutoIngestTorbox && rt.TorboxAPIKey != "" {
+				tb := torbox.NewClient(rt.TorboxAPIKey)
 				dl, err := tb.AddWebDownload(ctx, unmasked.UnmaskedURL, "")
-				if err == nil && dl != nil {
+				if err != nil {
+					res.Message += fmt.Sprintf(" Warning: TorBox WebDL failed: %v", err)
+				} else if dl != nil {
 					res.TorboxIngested = true
 					res.TorboxID = dl.Data.DownloadID
 					res.Message += fmt.Sprintf(" Ingested to TorBox WebDL (ID: %d).", res.TorboxID)
@@ -434,7 +417,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 11: play_on_tv
-	mcp.AddTool(s, catalogTool("play_on_tv", "📺 Play On TV Remote Trigger: generates targeted Stremio deep-links, web-links, and ADB commands for any TV in the house (Living Room, Bedroom, Kids Room), with optional Home Assistant/Android TV webhook triggers."),
+	mcp.AddTool(s, actionTool("play_on_tv", "Generate Stremio deep links, web links, or trigger Home Assistant TV webhooks for playback.", false),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input device.PlayOnTVInput) (*mcp.CallToolResult, *device.PlayOnTVResult, error) {
 			if input.WebhookURL == "" {
 				input.WebhookURL = rt.TVWebhookURL
@@ -444,7 +427,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 12: addons_manage
-	mcp.AddTool(s, catalogTool("addons_manage", "🧩 One-Click Addon Manager via Chat: list installed addons, install new addons from manifest URL, or safely uninstall addons from your Stremio account."),
+	mcp.AddTool(s, actionTool("addons_manage", "List installed addons, install new addons from manifest URL, or safely uninstall addons from your Stremio account.", true),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input AddonsManageInput) (*mcp.CallToolResult, AddonsManageResult, error) {
 			if rt.Account.AuthKey == "" {
 				return nil, AddonsManageResult{Message: "Stremio account is not linked. Configure STREMIO_AUTH_KEY to manage addons."}, nil
@@ -479,7 +462,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 13: devices_manage
-	mcp.AddTool(s, catalogTool("devices_manage", "🏠 Household TV Devices Manager: list, register, or remove smart TVs in your house (Living Room, Bedroom, Kids Room) with their local Wi-Fi IP address or webhook so Play On TV knows exactly which screen to launch."),
+	mcp.AddTool(s, actionTool("devices_manage", "List, register, or remove household TV targets and webhook configurations.", true),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input DevicesManageInput) (*mcp.CallToolResult, DevicesManageResult, error) {
 			reg := rt.DeviceRegistry
 			if reg == nil {
@@ -510,7 +493,7 @@ func serverFor(rt Runtime) *mcp.Server {
 					return nil, DevicesManageResult{}, err
 				}
 				list, _ := reg.List(ctx)
-				return nil, DevicesManageResult{Devices: list, Count: len(list), Message: fmt.Sprintf("Successfully registered TV device %q (%s) with IP %s.", dev.Name, dev.Alias, dev.IP)}, nil
+				return nil, DevicesManageResult{Devices: list, Count: len(list), Message: fmt.Sprintf("Successfully registered TV device %q (%s).", dev.Name, dev.Alias)}, nil
 			case "remove":
 				if input.Alias == "" {
 					return nil, DevicesManageResult{}, errors.New("alias is required to remove a device")

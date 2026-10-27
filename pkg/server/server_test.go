@@ -36,6 +36,16 @@ func TestMCPToolAnnotations(t *testing.T) {
 	if len(response.Result.Tools) != 13 {
 		t.Fatalf("expected exactly 13 tools, received %d", len(response.Result.Tools))
 	}
+
+	readOnlyExpected := map[string]bool{
+		"catalogs_get":              true,
+		"home_layout_get":           true,
+		"watch_history_get":         true,
+		"stream_availability_check": true,
+		"tmdb_discover":             true,
+		"tmdb_similar":              true,
+	}
+
 	expected := map[string]bool{
 		"catalogs_get":              true,
 		"catalogs_update":           true,
@@ -51,6 +61,7 @@ func TestMCPToolAnnotations(t *testing.T) {
 		"addons_manage":             true,
 		"devices_manage":            true,
 	}
+
 	for _, tool := range response.Result.Tools {
 		if !expected[tool.Name] {
 			t.Fatalf("unexpected or duplicated tool %q", tool.Name)
@@ -58,8 +69,10 @@ func TestMCPToolAnnotations(t *testing.T) {
 		delete(expected, tool.Name)
 		t.Run(tool.Name, func(t *testing.T) {
 			var readOnly bool
-			if err := json.Unmarshal(tool.Annotations["readOnlyHint"], &readOnly); err != nil || !readOnly {
-				t.Fatalf("tool %q must advertise readOnlyHint=true: %s (error: %v)", tool.Name, tool.Annotations["readOnlyHint"], err)
+			_ = json.Unmarshal(tool.Annotations["readOnlyHint"], &readOnly)
+			wantReadOnly := readOnlyExpected[tool.Name]
+			if readOnly != wantReadOnly {
+				t.Fatalf("tool %q readOnlyHint = %v; want %v", tool.Name, readOnly, wantReadOnly)
 			}
 			if _, present := tool.Annotations["openWorldHint"]; present {
 				t.Fatalf("tool %q must omit openWorldHint, not set it to false", tool.Name)
@@ -69,7 +82,7 @@ func TestMCPToolAnnotations(t *testing.T) {
 					Properties map[string]json.RawMessage `json:"properties"`
 				}
 				if err := json.Unmarshal(tool.InputSchema, &input); err != nil {
-					t.Fatalf("invalid home layout input schema: %v", err)
+					t.Fatalf("invalid input schema: %v", err)
 				}
 				fields := []string{"visibility", "row_moves", "addon_moves", "dry_run"}
 				if tool.Name == "catalogs_update" {
@@ -79,7 +92,7 @@ func TestMCPToolAnnotations(t *testing.T) {
 				}
 				for _, field := range fields {
 					if len(input.Properties[field]) == 0 {
-						t.Errorf("home_layout_update schema missing %s", field)
+						t.Errorf("%s schema missing %s", tool.Name, field)
 					}
 				}
 			}
@@ -112,6 +125,20 @@ func TestMCPRejectsMissingAndInvalidKeys(t *testing.T) {
 		if recorder.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("missing no-store response for %q", path)
 		}
+	}
+}
+
+func TestMCPBearerTokenAuth(t *testing.T) {
+	t.Setenv("MCP_API_KEY", "my-private-key")
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
+	req.Header.Set("Authorization", "Bearer my-private-key")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+	recorder := httptest.NewRecorder()
+	Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 with Bearer auth, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

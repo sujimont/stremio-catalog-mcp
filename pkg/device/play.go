@@ -5,10 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/amxv/stremio-catalog-mcp/pkg/httputil"
+)
+
+var (
+	imdbIDRegex = regexp.MustCompile(`^tt\d+(:\d+:\d+)?$`)
 )
 
 type PlayOnTVInput struct {
@@ -36,28 +44,41 @@ type PlayOnTVResult struct {
 
 // TriggerPlay builds Stremio deep links and targets a specific TV in the household.
 func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*PlayOnTVResult, error) {
-	if !strings.HasPrefix(input.IMDbID, "tt") {
-		return nil, fmt.Errorf("invalid IMDb ID: %s (must begin with tt)", input.IMDbID)
+	cleanID := strings.TrimSpace(input.IMDbID)
+	if !imdbIDRegex.MatchString(cleanID) {
+		return nil, fmt.Errorf("invalid IMDb ID %q: must match ^tt\\d+(:\\d+:\\d+)?$", cleanID)
 	}
 
-	mediaType := input.MediaType
+	mediaType := strings.ToLower(strings.TrimSpace(input.MediaType))
 	if mediaType == "" {
 		mediaType = "movie"
 	}
+	if mediaType != "movie" && mediaType != "series" {
+		return nil, fmt.Errorf("invalid media_type %q: must be 'movie' or 'series'", mediaType)
+	}
 
-	deepLink := fmt.Sprintf("stremio://detail/%s/%s", mediaType, input.IMDbID)
-	webLink := fmt.Sprintf("https://web.stremio.com/#/detail/%s/%s", mediaType, input.IMDbID)
+	deepLink := fmt.Sprintf("stremio://detail/%s/%s", mediaType, cleanID)
+	webLink := fmt.Sprintf("https://web.stremio.com/#/detail/%s/%s", mediaType, cleanID)
 
 	if mediaType == "series" && input.Season > 0 && input.Episode > 0 {
-		videoID := fmt.Sprintf("%s:%d:%d", input.IMDbID, input.Season, input.Episode)
-		deepLink = fmt.Sprintf("stremio://detail/series/%s/%s", input.IMDbID, videoID)
-		webLink = fmt.Sprintf("https://web.stremio.com/#/detail/series/%s/%s", input.IMDbID, videoID)
+		videoID := fmt.Sprintf("%s:%d:%d", cleanID, input.Season, input.Episode)
+		deepLink = fmt.Sprintf("stremio://detail/series/%s/%s", cleanID, videoID)
+		webLink = fmt.Sprintf("https://web.stremio.com/#/detail/series/%s/%s", cleanID, videoID)
 	}
 
 	// Resolve target TV
 	targetDeviceName := "Default TV"
-	deviceIP := input.DeviceIP
-	webhookURL := input.WebhookURL
+	deviceIP := strings.TrimSpace(input.DeviceIP)
+	webhookURL := strings.TrimSpace(input.WebhookURL)
+
+	if deviceIP != "" {
+		if ip := net.ParseIP(deviceIP); ip == nil {
+			return nil, fmt.Errorf("invalid device IP address %q", deviceIP)
+		}
+		if strings.ContainsAny(deviceIP, ";|&`$<>\"'\n\r ") {
+			return nil, fmt.Errorf("device IP contains invalid characters")
+		}
+	}
 
 	if reg != nil {
 		targetQuery := input.Device
@@ -69,9 +90,6 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 			targetDeviceName = dev.Name
 			if deviceIP == "" {
 				deviceIP = dev.IP
-			} else if dev.IP != deviceIP {
-				dev.IP = deviceIP
-				_ = reg.Register(ctx, *dev)
 			}
 			if webhookURL == "" {
 				webhookURL = dev.WebhookURL
@@ -87,7 +105,7 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 		webhookURL = os.Getenv("TV_WEBHOOK_URL")
 	}
 
-	// Build ADB command (targeted with IP if known)
+	// Build safe ADB command
 	adbCommand := fmt.Sprintf(`adb shell am start -a android.intent.action.VIEW -d "%s"`, deepLink)
 	if deviceIP != "" {
 		adbCommand = fmt.Sprintf(`adb connect %s:5555 && adb -s %s:5555 shell am start -a android.intent.action.VIEW -d "%s"`, deviceIP, deviceIP, deepLink)
@@ -95,9 +113,12 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 
 	webhookSent := false
 	if webhookURL != "" {
+		if err := httputil.ValidatePublicURL(webhookURL); err != nil {
+			return nil, fmt.Errorf("invalid webhook URL (SSRF protected): %w", err)
+		}
 		payload := map[string]any{
 			"media_type":    mediaType,
-			"imdb_id":       input.IMDbID,
+			"imdb_id":       cleanID,
 			"title":         input.Title,
 			"target_device": targetDeviceName,
 			"device_ip":     deviceIP,
@@ -110,8 +131,8 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(data))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
-			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Do(req)
+			safeClient := httputil.NewSafeClient(5 * time.Second)
+			resp, err := safeClient.Do(req)
 			if err == nil {
 				_ = resp.Body.Close()
 				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -121,21 +142,21 @@ func TriggerPlay(ctx context.Context, reg *Registry, input PlayOnTVInput) (*Play
 		}
 	}
 
-	titleDisplay := input.IMDbID
+	titleDisplay := cleanID
 	if input.Title != "" {
-		titleDisplay = fmt.Sprintf("%q (%s)", input.Title, input.IMDbID)
+		titleDisplay = fmt.Sprintf("%q (%s)", input.Title, cleanID)
 	}
 
 	msg := fmt.Sprintf("Targeting [%s]: playback intent generated for %s.", targetDeviceName, titleDisplay)
 	if deviceIP != "" {
-		msg += fmt.Sprintf(" IP: %s.", deviceIP)
+		msg += fmt.Sprintf(" Direct ADB command prepared for IP %s (execute on home network / Home Assistant bridge).", deviceIP)
 	}
 	if webhookSent {
 		msg += " Webhook successfully dispatched to your TV/Home Assistant."
 	}
 
 	return &PlayOnTVResult{
-		IMDbID:       input.IMDbID,
+		IMDbID:       cleanID,
 		Title:        input.Title,
 		TargetDevice: targetDeviceName,
 		DeviceIP:     deviceIP,

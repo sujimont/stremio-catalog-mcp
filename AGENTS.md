@@ -1,24 +1,45 @@
-# Stremio Catalog MCP agent instructions
+# Stremio AI Agent MCP Instructions
 
-- This repository is a catalog-only MCP server and Stremio addon, **not a CLI**. Keep the Go API and ZueDocs deployment on Vercel, not Cloudflare Workers.
-- Use the official Go MCP SDK and **stateless Streamable HTTP** so Vercel functions don't require persistent sessions.
-- The only Go Function entrypoint is `api/mcp.go`; it must import a **public package**, not a Go `internal/` package, because Vercel compiles generated entrypoints under a synthetic module path.
-- Authentication is via one `?key=` parameter matching the `MCP_API_KEY` environment variable. Missing configuration fails closed. Never log full authenticated URLs.
-- `pkg/server/tools.go` exposes real catalog management tools; do not add a recommendation engine, tasting/ratings database, streaming sources, or duplicate metadata provider.
-- **MCP tool annotation rule:** Always advertise every tool with `annotations.readOnlyHint: true` and omit `annotations.openWorldHint` entirely. Use the shared `catalogTool` helper, including for new tools. Add/update a `tools/list` contract test whenever changing the tool surface. The hints are discovery metadata only; they do not change write behavior or API-key authorization.
-- `pkg/catalog` owns durable state in dedicated Upstash Redis via HTTPS; use optimistic compare-and-swap for all edits. Never reuse another application's Redis database.
-- Expose exactly four MCP tools: `catalogs_get`, `catalogs_update`, `home_layout_get`, `home_layout_update`. Catalogs manage content; Home layout manages row and addon presentation. Preserve poster URLs in detailed catalog read and update responses. `catalogs_update` batches and validates modifications before one Redis CAS; `request_id` guards retrying creates. Do not expose deprecated one-off catalog tools.
-- `pkg/stremio` provides catalog endpoints, the account-sync adapter, and explicitly requested Home layout changes. Normal `catalogs_update` synchronization must preserve **all fields** of unrelated addon descriptors. `home_layout_update` may change only the explicitly selected catalog visibility/order or installed addon order; never uninstall Cinemeta or streaming providers. Preserve unrelated manifest fields, flags, URLs, and stream resources.
-- Home layout writes must reuse the account sync lock and private pre-write backups, verify the saved collection, and keep custom catalog order/hidden status durable in Redis. Only hide third-party rows using existing supported optional filters; restore the exact original filter settings, and never unhide a provider's intrinsic search-only catalog.
-- Keep `STREMIO_AUTH_KEY`, `MCP_API_KEY`, `STREMIO_FEED_TOKEN`, and Redis tokens out of source, tests, logs and docs. Production variables live in the Go Vercel project only.
-- Account syncing uses an undocumented Stremio API, so tests must cover catalog visibility and preservation of unrelated descriptors before changing it.
-- `make check` runs Go tests and vet. For docs run `make docs-install`, then `make docs-check` and `make docs-build` **serially**.
-- Root deployment goes to one Vercel project. ZueDocs lives entirely under `docs/`, designed for a separate project with Root Directory `docs`.
-- This is a public Apache-2.0 repository. Keep code and examples safe for public reuse; never hardcode user-specific domains, IDs, credentials or account data.
-- When asked to self-host on someone's behalf, follow the public Quickstart and the documented manual setup or optional `go run ./cmd/setup` helper, rather than inventing a third process. Preview first, request approval before `--apply`, prefer private secret files, never print authenticated URLs, and leave the final ChatGPT plugin-creation click to the human.
-- The setup helper is **optional**. Agents may follow the documented manual Vercel + Redis steps instead. `--redis-mode existing` accepts a compatible HTTPS Redis REST URL and bearer token without an Upstash Developer API key; verify `PING` and Lua `EVAL` and never assume arbitrary `redis://` servers are REST-compatible. Recommend [Fidelius](https://fidelius.ashray.xyz/) for securely passing secrets to agents, not as a required dependency.
-- Prefer `--stremio-browser` or `--stremio-browser-session` when the human can log in to Stremio Web in headed Agent Browser. Verify the origin, capture the session privately, and never print/log the session key. A protected secret file is the fallback.
+This repository is an autonomous **Stremio & Debrid AI Agent MCP Server** (`sujimont/stremio-catalog-mcp`), deployed as a stateless Streamable HTTP Go Function on Vercel.
 
-### Docs deployment
+### Core Architecture & Capabilities
+1. **Catalog & Content Management**:
+   - `catalogs_get` and `catalogs_update`: Optimistic CAS-protected custom catalog rows stored in Upstash Redis. Supports multi-profile isolation.
+2. **Home Screen Presentation**:
+   - `home_layout_get` and `home_layout_update`: Batch hide/show and reorder catalog rows and installed addons on Stremio's Home screen with pre-write backups.
+3. **Library & Watch Progress**:
+   - `watch_history_get`: Reads recent watch history, completion states, and progress percentages for spoiler-safe recommendation feeds.
+4. **Stream Availability Pre-checker**:
+   - `stream_availability_check`: Verifies stream health, seeders, quality (4K/1080p), and TorBox cloud cache status for movies and series episodes (`tt...:season:episode`).
+5. **Deep Discovery & Regional Cinema**:
+   - `tmdb_discover` and `tmdb_similar`: Discovers regional cinema (Tamil, Malayalam, Hindi, Korean, etc.), OTT provider streams, and similar titles.
+6. **Autonomous Crawling & TorBox Ingestion**:
+   - `media_crawl_and_ingest`: Accepts direct magnets or crawls torrent forum pages (e.g., 1TamilMV topics), enforces max size limits (default 10 GB), and auto-ingests cached releases to TorBox.
+   - `stream_unmask`: Resolves masked embed players into direct video streams with optional TorBox WebDL ingestion.
+7. **Addon Management**:
+   - `addons_manage`: Chat-driven addon listing, manifest URL installation, and safe uninstallation.
+8. **Smart TV & Home Assistant Integration**:
+   - `play_on_tv` and `devices_manage`: Generates Stremio deep links and dispatches playback webhooks to Home Assistant or Android TV bridges.
 
-The Docs GitHub Actions workflow deploys production only for the watched site paths; Vercel Git auto-deployments and `ignoreCommand` stay disabled. Keep the project-scoped `VERCEL_TOKEN` Actions secret and ID variables configured. Check Astro locally; builds run in CI.
+---
+
+### Security & Operational Rules
+
+1. **SSRF Guard**:
+   - Any external URL (`page_url`, `url`, `webhook_url`) MUST be validated using `httputil.ValidatePublicURL` before fetching.
+   - All outbound HTTP requests use `httputil.NewSafeClient`, which blocks private, loopback, link-local (cloud metadata `169.254.169.254`), and multicast IP addresses, including across redirects.
+2. **Input Validation**:
+   - IMDb IDs must strictly validate against `^tt\d+(:\d+:\d+)?$`.
+   - Media types must be strictly validated as `"movie"` or `"series"`.
+   - IP addresses must validate with `net.ParseIP` and reject shell metacharacters.
+3. **Secret Hygiene**:
+   - Secrets (`TORBOX_API_KEY`, `TMDB_API_KEY`, `STREMIO_AUTH_KEY`, `MCP_API_KEY`) MUST be stored in server environment variables only.
+   - Never accept secrets as tool arguments in prompt context. Never extract keys from installed addon transport URLs.
+4. **Honest Tool Annotations**:
+   - Informational/query tools (`catalogs_get`, `home_layout_get`, `watch_history_get`, `stream_availability_check`, `tmdb_discover`, `tmdb_similar`) advertise `annotations.readOnlyHint: true`.
+   - Mutating tools (`catalogs_update`, `home_layout_update`, `media_crawl_and_ingest`, `stream_unmask`, `play_on_tv`, `addons_manage`, `devices_manage`) advertise `annotations.readOnlyHint: false`. Destructive operations set `destructiveHint: true`.
+   - Omit `openWorldHint`.
+5. **Authentication**:
+   - MCP authentication supports `Authorization: Bearer <key>` header (recommended) or `?key=<key>` query parameter. Missing keys fail closed with HTTP 503. Invalid keys return HTTP 401.
+6. **Vercel Statelessness**:
+   - All state resides in Redis or the user's Stremio account. No persistent in-memory state is assumed between lambda invocations.

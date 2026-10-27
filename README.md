@@ -1,53 +1,76 @@
-# Stremio Catalog MCP
+# Stremio AI Agent MCP
 
-**Your AI recommends. Stremio plays.** This lightweight [Model Context Protocol](https://modelcontextprotocol.io/) server lets ChatGPT or another MCP assistant publish movie and TV recommendations to native Stremio catalog rows, then organize your Home screen.
+**Autonomous Stremio & Debrid AI Agent for ChatGPT, Claude, and MCP Clients.**
 
-**[Website](https://stremio-catalog-mcp.ashray.xyz/) · [Quickstart](https://stremio-catalog-mcp.ashray.xyz/docs/quickstart) · [Self-hosting guide](https://stremio-catalog-mcp.ashray.xyz/docs/deployment) · [MCP tools](https://stremio-catalog-mcp.ashray.xyz/docs/tools)**
+This high-performance [Model Context Protocol](https://modelcontextprotocol.io/) server connects your AI assistant directly to your Stremio ecosystem: managing custom catalog rows, organizing Home layout, discovering regional cinema, checking stream health via Torrentio, crawling torrent forums (e.g. 1TamilMV), auto-ingesting magnets to TorBox, and managing installed addons.
 
-## What it does
+---
 
-Ask your assistant to find something to watch, then send the results to Stremio. It can create, rename, reorder, refresh, clear, and delete custom catalog rows, and add or remove individual titles. **Home layout tools** can show/hide compatible rows from Cinemeta and other installed add-ons, reorder catalogs within each add-on, and rearrange whole add-ons. Existing Cinemeta metadata and streaming add-ons keep working; this service supplies **catalogs only**, never streams or its own recommendations.
+## Capabilities & Tool Surface
 
-The **four-tool interface** is simple: `catalogs_get`/`catalogs_update` manage the content of your own rows; `home_layout_get`/`home_layout_update` manage their visibility and order alongside other installed add-ons. Detailed catalog reads and update results include saved **poster URLs**, ready to show in chat. Catalog changes can be batched, previewed with `dry_run`, and retried safely using `request_id`.
+The server exposes 13 purpose-built MCP tools across 6 operational domains:
 
-For example: **“Hide Cinemeta's Popular and Featured rows, move my MCU row first, and place my catalog add-on above Cinemeta.”** `home_layout_get` lists the current layout; one batched `home_layout_update` call supports visibility changes, row moves, addon moves, and a no-write `dry_run` preview. Third-party rows without optional search/genre filters cannot be safely hidden. Individual rows cannot be moved across addon boundaries, although complete addons can be reordered.
+### 1. Catalog & Row Content
+* **`catalogs_get`**: Reads your custom catalog rows, ordered titles, and saved poster URLs. Supports multi-profile isolation.
+* **`catalogs_update`**: Batched mutations (create, edit, delete, reorder titles, or prune watched titles) with optimistic Redis compare-and-swap (CAS) concurrency protection.
 
-## Let your agent set it up
+### 2. Home Screen Layout
+* **`home_layout_get`**: Lists all installed addons and their catalog rows with Home screen visibility and order.
+* **`home_layout_update`**: Batch show/hide catalog rows and reorder addons on the Stremio Home screen. Supports `dry_run` preview.
 
-Fork or clone this repository and give your coding agent this instruction:
+### 3. Library & Watch History
+* **`watch_history_get`**: Reads watch history from your Stremio library with watch progress and completion state, enabling spoiler-safe recommendations.
 
-> Self-host this Stremio Catalog MCP for me. Follow the [agent-led Quickstart](https://stremio-catalog-mcp.ashray.xyz/docs/quickstart). Deploy the Go API to my Vercel account, use a Free Upstash Redis database **or an existing compatible Redis REST URL/token**, securely connect my Stremio account, verify the endpoints, and copy the full authenticated MCP URL to my clipboard. Ask me only for required sign-ins, secret approvals, and the final ChatGPT plugin step. Do not print credentials or enable paid services.
+### 4. Stream Pre-Checking & Verification
+* **`stream_availability_check`**: Pre-verifies active torrent stream counts, highest resolution (4K/1080p), seeders, and instant TorBox cloud cache status for any movie or series episode (`tt...:season:episode`).
 
-The included Go helper automates most of the provisioning:
+### 5. Deep Discovery & Regional Cinema
+* **`tmdb_discover`**: Discovers cinema by regional language (Tamil, Malayalam, Hindi, Telugu, Korean, etc.), streaming provider (Netflix, Prime, Hotstar), genre, year, and rating.
+* **`tmdb_similar`**: Finds similar and recommended movies/shows for any title or IMDb ID.
 
-```bash
-go run ./cmd/setup --project my-stremio-catalog  # Preview, no changes
-go run ./cmd/setup --apply --project my-stremio-catalog
-```
+### 6. Autonomous Crawling & TorBox Ingestion
+* **`media_crawl_and_ingest`**: Autonomous media crawler. Accepts direct `magnet:?` links or crawls torrent forum topic URLs (e.g. 1TamilMV), verifies TorBox cache, enforces a 10 GB size safeguard, and automatically ingests the release to TorBox.
+* **`stream_unmask`**: Resolves masked embed players into direct video URLs with optional TorBox WebDL ingestion.
 
-The helper guides you through secure credentials, provisions Free Redis, configures and deploys Vercel, and copies the MCP URL without printing its secret. Agents can use protected `--upstash-email-file`, `--upstash-key-file`, and `--stremio-key-file` arguments with `--yes` after human approval. Run `go run ./cmd/setup --copy-url` to copy your saved URL again.
+### 7. Addon & Household Device Management
+* **`addons_manage`**: Chat-driven addon management: list installed addons, install from manifest URL, or safely uninstall addons.
+* **`play_on_tv`**: Generates Stremio deep links and triggers Home Assistant/Android TV webhooks.
+* **`devices_manage`**: Registers and manages household smart TVs with local IP and webhook targets.
 
-Already have Redis? Use `--redis-mode existing` with `--redis-rest-url-file` and `--redis-rest-token-file`. No Upstash Developer API key is required. To connect Stremio without manually handling its session key, add `--stremio-browser`: your agent opens Stremio Web, you log in, and it securely reads the signed-in session. [Fidelius](https://fidelius.ashray.xyz/) is a useful option for securely passing tokens and private files to agents.
+---
 
-**The helper is optional.** The [self-hosting reference](https://stremio-catalog-mcp.ashray.xyz/docs/deployment) also walks through the entire manual Vercel + Redis setup. Review the [Go bootstrap source](https://github.com/amxv/stremio-catalog-mcp/blob/main/cmd/setup/main.go) before running it.
+## Security & Architecture
 
-### Add to ChatGPT
+* **SSRF Protection**: All outbound requests (forum crawling, video unmasking, webhooks) pass through a hardened `SafeHTTPClient` that validates schemes (`https://` only) and blocks loopback, private RFC1918, cloud metadata (`169.254.169.254`), and multicast IP addresses across all DNS lookups and redirects.
+* **Command Injection Immunity**: All media IDs are validated with strict regex (`^tt\d+(:\d+:\d+)?$`), media types against enums, and IPs with `net.ParseIP`.
+* **Zero Secret Leakage**: API keys (`TORBOX_API_KEY`, `TMDB_API_KEY`, `STREMIO_AUTH_KEY`, `MCP_API_KEY`) live exclusively in server environment variables and are never accepted or emitted in chat context.
+* **Honest Tool Annotations**: Discovery queries carry `readOnlyHint: true`, while mutating operations advertise `readOnlyHint: false` (and `destructiveHint: true` where items can be removed).
+* **Flexible Authentication**: Supports standard `Authorization: Bearer <key>` header as well as `?key=<key>` URL query parameter.
 
-Once your agent has copied the URL: **Plugins → Create custom MCP server → No authentication → enter a name → Add as plugin.** Paste the full URL including `?key=...`. *No authentication* means ChatGPT won't initiate a separate OAuth flow; the URL still contains a private API key.
+---
 
-Try: **“Find six excellent mind-bending sci-fi series and make a Stremio row called Sci-Fi Worth Watching.”** Or: **“Show me every Stremio Home row and hide the default recommendations.”** Refresh Stremio if the new layout hasn't appeared yet.
+## Deployment & Setup
 
-## What runs where
+Deploy as a stateless Go serverless function on Vercel:
 
-- **Go + Vercel:** stateless Streamable HTTP MCP endpoint and standard Stremio catalog endpoints.
-- **Redis REST (Upstash-compatible):** durable, ordered rows and synchronization safeguards.
-- **Cinemeta:** IMDb ID lookup, with playback handled by your existing add-ons.
-- **Stremio account API:** optional account linking to add and rename rows and manage the Home layout; it is an unversioned integration and can require an app restart.
+1. Clone or fork this repository:
+   ```bash
+   git clone https://github.com/sujimont/stremio-catalog-mcp.git
+   ```
+2. Configure environment variables in Vercel (see `.env.example`):
+   * `MCP_API_KEY`: Secret key for your MCP connection.
+   * `UPSTASH_REDIS_REST_URL`: Upstash Redis REST endpoint.
+   * `UPSTASH_REDIS_REST_TOKEN`: Upstash Redis REST token.
+   * `STREMIO_AUTH_KEY`: (Optional) Your Stremio account auth key.
+   * `TORBOX_API_KEY`: (Optional) TorBox API key for debrid caching and autonomous ingestion.
+   * `TMDB_API_KEY`: (Optional) TMDB API key for regional discovery.
+   * `TV_WEBHOOK_URL`: (Optional) Home Assistant webhook URL.
+3. Add the MCP endpoint to ChatGPT:
+   * **Custom MCP Server URL**: `https://your-deployment.vercel.app/mcp?key=YOUR_MCP_API_KEY`
+   * Or use `Authorization: Bearer YOUR_MCP_API_KEY`.
 
-One deployment manages **one Stremio account**. Keep all generated keys, Redis tokens, and the Stremio session private. See the website's [technical reference](https://stremio-catalog-mcp.ashray.xyz/docs/architecture) for security and limitations.
+---
 
-## Develop
+## License
 
-Go 1.26+, Bun for the optional docs site, and a Vercel account for hosting. Run `make check` to test the Go server; `make docs-check` and `make docs-build` validate the Astro/ZueDocs site. Credentials aren't required for tests.
-
-Open source under [Apache-2.0](LICENSE). Self-host it on your own Vercel and Redis accounts.
+Open source under [Apache-2.0](LICENSE).

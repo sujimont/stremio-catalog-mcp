@@ -14,7 +14,15 @@ import (
 	"github.com/amxv/stremio-catalog-mcp/pkg/catalog"
 )
 
-const AddonID = "xyz.ashray.stremio-catalog-mcp"
+const (
+	AddonID       = "xyz.sujimont.stremio-catalog-mcp"
+	LegacyAddonID = "xyz.ashray.stremio-catalog-mcp"
+)
+
+// IsOurAddon checks if an addon ID belongs to this catalog MCP server (current or legacy).
+func IsOurAddon(id string) bool {
+	return id == AddonID || id == LegacyAddonID
+}
 
 type Manifest struct {
 	ID          string    `json:"id"`

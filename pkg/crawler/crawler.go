@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amxv/stremio-catalog-mcp/pkg/httputil"
 	"github.com/amxv/stremio-catalog-mcp/pkg/torbox"
 )
 
@@ -228,6 +229,10 @@ func CrawlAndIngest(ctx context.Context, opts CrawlOptions) (*CrawlResult, error
 
 	// Pathway 2: Torrent Forum / Webpage Link Crawler (1TamilMV, etc.)
 	if opts.PageURL != "" {
+		if err := httputil.ValidatePublicURL(opts.PageURL); err != nil {
+			return nil, fmt.Errorf("SSRF protection: %w", err)
+		}
+		safeClient := httputil.NewSafeClient(15 * time.Second)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, opts.PageURL, nil)
 		if err != nil {
 			return nil, err
@@ -235,7 +240,7 @@ func CrawlAndIngest(ctx context.Context, opts CrawlOptions) (*CrawlResult, error
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-		resp, err := httpClient.Do(req)
+		resp, err := safeClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch torrent page: %w", err)
 		}

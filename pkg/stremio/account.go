@@ -178,7 +178,7 @@ func (a AccountAPI) Sync(ctx context.Context, state catalog.State, manifestURL s
 	}
 	position := -1
 	for i, entry := range current {
-		if descriptorID(entry) == AddonID {
+		if IsOurAddon(descriptorID(entry)) {
 			if position != -1 {
 				return errors.New("duplicate installed instances of our addon; refusing account rewrite")
 			}
@@ -222,7 +222,7 @@ func (a AccountAPI) Sync(ctx context.Context, state catalog.State, manifestURL s
 	}
 	var found int
 	for _, entry := range verified {
-		if descriptorID(entry) == AddonID {
+		if IsOurAddon(descriptorID(entry)) {
 			found++
 			var actual Manifest
 			expected := BuildManifest(state)
@@ -235,7 +235,7 @@ func (a AccountAPI) Sync(ctx context.Context, state catalog.State, manifestURL s
 		return errors.New("Stremio addon collection unexpectedly changed after sync")
 	}
 	for i, entry := range verified {
-		if descriptorID(entry) != AddonID && !reflect.DeepEqual(entry, current[i]) {
+		if !IsOurAddon(descriptorID(entry)) && !reflect.DeepEqual(entry, current[i]) {
 			return errors.New("unrelated addon descriptor differs from original collection after sync")
 		}
 	}
@@ -397,28 +397,18 @@ type InstalledAddonInfo struct {
 	Protected    bool     `json:"protected"`
 }
 
-// GetTorrentioStreamBase extracts the user's installed Torrentio stream base URL and TorBox API key.
-func (a AccountAPI) GetTorrentioStreamBase(ctx context.Context) (string, string) {
+// GetTorrentioStreamBase returns the user's installed Torrentio stream base URL.
+func (a AccountAPI) GetTorrentioStreamBase(ctx context.Context) string {
 	addons, err := a.Get(ctx)
 	if err != nil {
-		return "", ""
+		return ""
 	}
 	for _, entry := range addons {
 		if strings.Contains(entry.TransportURL, "torrentio.strem.fun") {
-			base := strings.TrimSuffix(entry.TransportURL, "/manifest.json")
-			torboxKey := ""
-			if idx := strings.Index(base, "torbox="); idx != -1 {
-				sub := base[idx+7:]
-				if end := strings.IndexAny(sub, "|/"); end != -1 {
-					torboxKey = sub[:end]
-				} else {
-					torboxKey = sub
-				}
-			}
-			return base, torboxKey
+			return strings.TrimSuffix(entry.TransportURL, "/manifest.json")
 		}
 	}
-	return "", ""
+	return ""
 }
 
 // ListInstalledAddons returns a user-friendly summary of all installed addons.

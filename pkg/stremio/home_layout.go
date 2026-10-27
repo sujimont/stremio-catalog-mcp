@@ -158,7 +158,12 @@ func uniqueAddonIndex(addons []Descriptor, id string) (int, error) {
 	}
 	index := -1
 	for i, addon := range addons {
-		if descriptorID(addon) != id {
+		dID := descriptorID(addon)
+		match := (dID == id)
+		if IsOurAddon(id) && IsOurAddon(dID) {
+			match = true
+		}
+		if !match {
 			continue
 		}
 		if index != -1 {
@@ -423,7 +428,7 @@ func PlanHomeLayout(current []Descriptor, source catalog.State, saved Visibility
 		if err != nil {
 			return plan, err
 		}
-		if item.Row.AddonID == AddonID {
+		if IsOurAddon(item.Row.AddonID) {
 			row, err := findCustomRow(plan.Catalogs.Rows, item.Row)
 			if err != nil {
 				return plan, err
@@ -475,7 +480,7 @@ func PlanHomeLayout(current []Descriptor, source catalog.State, saved Visibility
 		if err != nil {
 			return plan, err
 		}
-		if item.Row.AddonID == AddonID {
+		if IsOurAddon(item.Row.AddonID) {
 			from, err := findCustomRow(plan.Catalogs.Rows, item.Row)
 			if err != nil {
 				return plan, err
@@ -593,7 +598,7 @@ func BuildHomeLayout(addons []Descriptor, state catalog.State, visibility Visibi
 				}
 			}
 		}
-		if meta.ID == AddonID {
+		if IsOurAddon(meta.ID) {
 			for j, row := range state.Rows {
 				addon.Rows = append(addon.Rows, HomeRow{ID: row.ID, Type: row.Type, Name: row.Name, Position: j, Visible: !row.Hidden, CanHide: true, CanShow: true, Visibility: "managed"})
 			}

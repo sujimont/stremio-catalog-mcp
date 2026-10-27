@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/amxv/stremio-catalog-mcp/pkg/httputil"
 )
 
 var (
@@ -59,6 +61,10 @@ func UnpackJS(packed string) string {
 
 // UnmaskStream resolves a masked streaming webpage or embed link to a raw playable video URL.
 func UnmaskStream(ctx context.Context, client *http.Client, pageURL string) (*UnmaskResult, error) {
+	if err := httputil.ValidatePublicURL(pageURL); err != nil {
+		return nil, fmt.Errorf("SSRF protection: %w", err)
+	}
+
 	cleanP := strings.ToLower(pageURL)
 	if strings.Contains(cleanP, ".m3u8") {
 		return &UnmaskResult{OriginalURL: pageURL, UnmaskedURL: pageURL, StreamType: "hls"}, nil
@@ -68,15 +74,7 @@ func UnmaskStream(ctx context.Context, client *http.Client, pageURL string) (*Un
 	}
 
 	if client == nil {
-		client = &http.Client{
-			Timeout: 12 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 10 {
-					return fmt.Errorf("stopped after 10 redirects")
-				}
-				return nil
-			},
-		}
+		client = httputil.NewSafeClient(15 * time.Second)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
