@@ -125,6 +125,15 @@ func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
 			if err != nil {
 				return err
 			}
+			// If Redis has never been initialized yet (rawPrev == ""), seed initial devices from TV_DEVICES_JSON
+			if rawPrev == "" {
+				if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
+					var list []DeviceConfig
+					if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
+						current = list
+					}
+				}
+			}
 			updated := make([]DeviceConfig, 0, len(current)+1)
 			found := false
 			for _, d := range current {
@@ -160,6 +169,14 @@ func (r *Registry) Register(ctx context.Context, dev DeviceConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	current := r.mem
+	if current == nil {
+		if envJSON := os.Getenv("TV_DEVICES_JSON"); envJSON != "" {
+			var list []DeviceConfig
+			if err := json.Unmarshal([]byte(envJSON), &list); err == nil && len(list) > 0 {
+				current = list
+			}
+		}
+	}
 	updated := make([]DeviceConfig, 0, len(current)+1)
 	found := false
 	for _, d := range current {
@@ -374,4 +391,33 @@ func (r *Registry) casRedis(ctx context.Context, previous, next string) (bool, e
 		return v == "1", nil
 	}
 	return false, nil
+}
+
+// Reset clears all registered devices from Redis and in-memory cache, restoring an uninitialized state.
+func (r *Registry) Reset(ctx context.Context) error {
+	r.mu.Lock()
+	r.mem = nil
+	r.mu.Unlock()
+
+	if r.RedisURL != "" && r.RedisToken != "" {
+		endpoint := strings.TrimRight(r.RedisURL, "/")
+		reqBody, _ := json.Marshal([]any{"DEL", devicesRedisKey})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+r.RedisToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := r.Client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("redis DEL returned HTTP %d", resp.StatusCode)
+		}
+	}
+	return nil
 }

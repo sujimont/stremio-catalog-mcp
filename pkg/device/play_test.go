@@ -196,3 +196,55 @@ func TestDeviceRegistryRemovalNoResurrection(t *testing.T) {
 		t.Errorf("expected 0 devices after removal, got %d (resurrection bug)", len(list))
 	}
 }
+
+func TestDeviceRegistrySeeding(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("TV_DEVICES_JSON", `[{"name":"Living Room TV","alias":"living_room","ip":"192.168.1.50"}]`)
+
+	reg := &Registry{}
+
+	// First registration should seed from TV_DEVICES_JSON and keep both
+	err := reg.Register(ctx, DeviceConfig{
+		Name:  "Bedroom TV",
+		Alias: "bedroom",
+		IP:    "192.168.1.51",
+	})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	list, err := reg.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("expected 2 devices (seeded + registered), got %d", len(list))
+	}
+}
+
+func TestDeviceRegistryReset(t *testing.T) {
+	ctx := context.Background()
+	reg := &Registry{}
+
+	err := reg.Register(ctx, DeviceConfig{
+		Name:  "Living Room TV",
+		Alias: "living_room",
+		IP:    "192.168.1.50",
+	})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	err = reg.Reset(ctx)
+	if err != nil {
+		t.Fatalf("Reset failed: %v", err)
+	}
+
+	list, err := reg.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected 0 devices after reset, got %d", len(list))
+	}
+}

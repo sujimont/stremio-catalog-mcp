@@ -241,7 +241,7 @@ type AddonsManageResult struct {
 }
 
 type DevicesManageInput struct {
-	Action     string `json:"action" jsonschema:"Action: list, register, or remove"`
+	Action     string `json:"action" jsonschema:"Action: list, register, remove, or reset"`
 	Name       string `json:"name,omitempty" jsonschema:"Display name of the TV (e.g. Living Room TV, Bedroom TV)"`
 	Alias      string `json:"alias,omitempty" jsonschema:"Room alias (e.g. living_room, bedroom, kids_room)"`
 	IP         string `json:"ip,omitempty" jsonschema:"Local Wi-Fi IP address of the TV (e.g. 192.168.1.50)"`
@@ -505,8 +505,13 @@ func serverFor(rt Runtime) *mcp.Server {
 				}
 				list, _ := reg.List(ctx)
 				return nil, DevicesManageResult{Devices: list, Count: len(list), Message: fmt.Sprintf("Successfully removed TV device alias %q.", input.Alias)}, nil
+			case "reset":
+				if err := reg.Reset(ctx); err != nil {
+					return nil, DevicesManageResult{}, err
+				}
+				return nil, DevicesManageResult{Devices: []device.DeviceConfig{}, Count: 0, Message: "Successfully reset device registry."}, nil
 			default:
-				return nil, DevicesManageResult{}, fmt.Errorf("unknown action %q (must be list, register, or remove)", input.Action)
+				return nil, DevicesManageResult{}, fmt.Errorf("unknown action %q (must be list, register, remove, or reset)", input.Action)
 			}
 		})
 

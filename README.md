@@ -35,7 +35,7 @@ The server exposes 13 purpose-built MCP tools across 6 operational domains:
 ### 7. Addon & Household Device Management
 * **`addons_manage`**: Chat-driven addon management: list installed addons, install from manifest URL, or safely uninstall addons.
 * **`play_on_tv`**: Generates Stremio deep links and triggers Home Assistant/Android TV webhooks.
-* **`devices_manage`**: Registers and manages household smart TVs with local IP and webhook targets.
+* **`devices_manage`**: Registers, lists, removes, or resets household smart TVs with local IP and webhook targets. Seeds initial configuration from `TV_DEVICES_JSON` so environment entries are preserved across registrations.
 
 ---
 
