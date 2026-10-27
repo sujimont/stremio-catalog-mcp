@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/amxv/stremio-catalog-mcp/pkg/catalog"
@@ -147,10 +148,12 @@ type WatchHistoryResult struct {
 }
 
 type StreamAvailabilityInput struct {
-	IMDbID       string   `json:"imdb_id,omitempty" jsonschema:"Single IMDb ID (e.g. tt1375666)"`
+	IMDbID       string   `json:"imdb_id,omitempty" jsonschema:"Single IMDb ID (e.g. tt1375666, or tt37539312:2:1 for series season/episode)"`
 	IMDbIDs      []string `json:"imdb_ids,omitempty" jsonschema:"Optional list of up to 50 IMDb IDs to batch-check all at once in parallel"`
 	Title        string   `json:"title,omitempty" jsonschema:"Optional title to verify stream filename match"`
 	MediaType    string   `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Season       int      `json:"season,omitempty" jsonschema:"Season number for series (e.g. 2 for Season 2, defaults to 1)"`
+	Episode      int      `json:"episode,omitempty" jsonschema:"Episode number for series (e.g. 1 for Episode 1, defaults to 1)"`
 	TorboxAPIKey string   `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override to verify instant cloud caching"`
 }
 
@@ -188,11 +191,15 @@ type TMDBSimilarResult struct {
 }
 
 type MediaCrawlInput struct {
-	Title        string  `json:"title" jsonschema:"Movie or show title to crawl"`
+	Title        string  `json:"title,omitempty" jsonschema:"Movie or show title to crawl"`
 	IMDbID       string  `json:"imdb_id,omitempty" jsonschema:"Optional IMDb ID for precision"`
 	MediaType    string  `json:"media_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Season       int     `json:"season,omitempty" jsonschema:"Season number for series (e.g. 2 for Season 2)"`
+	Episode      int     `json:"episode,omitempty" jsonschema:"Episode number for series (default 1)"`
+	Magnet       string  `json:"magnet,omitempty" jsonschema:"Direct magnet URI (magnet:?xt=...) to verify and ingest immediately to TorBox"`
+	PageURL      string  `json:"page_url,omitempty" jsonschema:"Torrent forum or webpage URL (e.g. 1TamilMV topic) to crawl, extract magnets, and ingest best release to TorBox"`
 	MaxSizeGB    float64 `json:"max_size_gb,omitempty" jsonschema:"Maximum file size in GB to ingest to TorBox (default 10.0 GB per movie or episode)"`
-	AutoIngest   bool    `json:"auto_ingest,omitempty" jsonschema:"Automatically ingest best torrent/stream to TorBox (default true)"`
+	AutoIngest   *bool   `json:"auto_ingest,omitempty" jsonschema:"Automatically ingest best torrent/stream to TorBox (default true)"`
 	TorboxAPIKey string  `json:"torbox_api_key,omitempty" jsonschema:"Optional TorBox API key override"`
 }
 
@@ -298,7 +305,19 @@ func serverFor(rt Runtime) *mcp.Server {
 				result, err := streams.CheckBatchAvailability(ctx, input.MediaType, input.IMDbIDs, torboxKey, streamBase)
 				return nil, result, err
 			}
-			result, err := streams.CheckAvailability(ctx, input.MediaType, input.IMDbID, input.Title, torboxKey, streamBase)
+			imdbID := input.IMDbID
+			if input.MediaType == "series" && imdbID != "" && !strings.Contains(imdbID, ":") {
+				s := input.Season
+				if s <= 0 {
+					s = 1
+				}
+				ep := input.Episode
+				if ep <= 0 {
+					ep = 1
+				}
+				imdbID = fmt.Sprintf("%s:%d:%d", imdbID, s, ep)
+			}
+			result, err := streams.CheckAvailability(ctx, input.MediaType, imdbID, input.Title, torboxKey, streamBase)
 			return nil, result, err
 		})
 
@@ -353,7 +372,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 9: media_crawl_and_ingest
-	mcp.AddTool(s, catalogTool("media_crawl_and_ingest", "🚀 Autonomous TorBox Torrent & HTTP Crawler: searches high-quality torrents/magnets under 10GB limit (configurable via max_size_gb), verifies TorBox cache, and automatically ingests the best stream to TorBox so it's ready to stream."),
+	mcp.AddTool(s, catalogTool("media_crawl_and_ingest", "🚀 Autonomous TorBox Torrent & Forum Crawler: crawls torrent forum pages (e.g. 1TamilMV topics), accepts direct magnet links, or searches torrents by title/IMDb under 10GB limit (configurable via max_size_gb), verifies TorBox cache, and automatically ingests the best stream to TorBox so it's ready to stream."),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input MediaCrawlInput) (*mcp.CallToolResult, *crawler.CrawlResult, error) {
 			torboxKey := input.TorboxAPIKey
 			if torboxKey == "" {
@@ -363,7 +382,24 @@ func serverFor(rt Runtime) *mcp.Server {
 			if torboxKey == "" && discoveredTBKey != "" {
 				torboxKey = discoveredTBKey
 			}
-			result, err := crawler.CrawlAndIngest(ctx, input.Title, input.IMDbID, input.MediaType, torboxKey, input.MaxSizeGB, input.AutoIngest, streamBase)
+			autoIngest := true
+			if input.AutoIngest != nil {
+				autoIngest = *input.AutoIngest
+			}
+			opts := crawler.CrawlOptions{
+				Title:      input.Title,
+				IMDbID:     input.IMDbID,
+				MediaType:  input.MediaType,
+				Season:     input.Season,
+				Episode:    input.Episode,
+				Magnet:     input.Magnet,
+				PageURL:    input.PageURL,
+				TorboxKey:  torboxKey,
+				MaxSizeGB:  input.MaxSizeGB,
+				AutoIngest: autoIngest,
+				StreamBase: streamBase,
+			}
+			result, err := crawler.CrawlAndIngest(ctx, opts)
 			return nil, result, err
 		})
 

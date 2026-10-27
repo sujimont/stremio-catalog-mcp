@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +15,20 @@ import (
 
 	"github.com/amxv/stremio-catalog-mcp/pkg/torbox"
 )
+
+type CrawlOptions struct {
+	Title      string  `json:"title,omitempty"`
+	IMDbID     string  `json:"imdb_id,omitempty"`
+	MediaType  string  `json:"media_type,omitempty"`
+	Season     int     `json:"season,omitempty"`
+	Episode    int     `json:"episode,omitempty"`
+	Magnet     string  `json:"magnet,omitempty"`
+	PageURL    string  `json:"page_url,omitempty"`
+	TorboxKey  string  `json:"torbox_key,omitempty"`
+	MaxSizeGB  float64 `json:"max_size_gb,omitempty"`
+	AutoIngest bool    `json:"auto_ingest,omitempty"`
+	StreamBase string  `json:"stream_base,omitempty"`
+}
 
 type CrawlResult struct {
 	Query          string  `json:"query"`
@@ -45,6 +60,7 @@ type torrentioResponse struct {
 
 var (
 	hex40Regex    = regexp.MustCompile(`(?i)\b([0-9a-f]{40})\b`)
+	magnetRegex   = regexp.MustCompile(`(?i)magnet:\?[^\s"'<>]+`)
 	diskSizeRegex = regexp.MustCompile(`(?i)(?:💾\s*|size:\s*)([0-9]+(?:\.[0-9]+)?)\s*(TB|TiB|GB|GiB|MB|MiB)\b`)
 	anySizeRegex  = regexp.MustCompile(`(?i)\b([0-9]+(?:\.[0-9]+)?)\s*(TB|TiB|GB|GiB|MB|MiB)\b`)
 )
@@ -96,38 +112,291 @@ func extractHash(s torrentioStream) string {
 	return ""
 }
 
-// CrawlAndIngest executes the autonomous 2-tier search:
-// 1. Searches torrent streams via Torrentio and checks TorBox cache.
-// 2. Filters out massive files exceeding maxSizeGB (defaults to 10.0 GB).
-// 3. If healthy torrents exist, optionally ingests the best magnet to TorBox.
-// 4. If torrents are unavailable, crawls for unmasked HTTP streams.
-func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey string, maxSizeGB float64, autoIngest bool, streamBase string) (*CrawlResult, error) {
-	if mediaType == "" {
-		mediaType = "movie"
-	}
-	if maxSizeGB <= 0 {
-		maxSizeGB = 10.0 // Default 10GB limit per movie/episode
-	}
-	httpClient := &http.Client{Timeout: 12 * time.Second}
+func extractMagnetInfo(rawMagnet string) (hash, title, quality string, sizeGB float64) {
+	rawMagnet = html.UnescapeString(rawMagnet)
+	hash = hex40Regex.FindString(rawMagnet)
+	title = ""
+	quality = "SD"
+	sizeGB = 0
 
-	// Step 1: If IMDb ID is missing, try to resolve via Cinemeta search
+	if idx := strings.Index(rawMagnet, "dn="); idx != -1 {
+		sub := rawMagnet[idx+3:]
+		if amp := strings.Index(sub, "&"); amp != -1 {
+			sub = sub[:amp]
+		}
+		if unescaped, err := url.QueryUnescape(sub); err == nil && unescaped != "" {
+			title = strings.TrimSpace(unescaped)
+		}
+	}
+	if title == "" && hash != "" {
+		title = "Torrent " + hash[:8]
+	}
+
+	quality = detectQuality(title)
+	sizeGB = parseFileSizeGB(title)
+
+	if sizeGB == 0 {
+		if xlIdx := strings.Index(rawMagnet, "xl="); xlIdx != -1 {
+			sub := rawMagnet[xlIdx+3:]
+			if amp := strings.Index(sub, "&"); amp != -1 {
+				sub = sub[:amp]
+			}
+			if bytesVal, err := strconv.ParseInt(sub, 10, 64); err == nil && bytesVal > 0 {
+				sizeGB = float64(bytesVal) / (1024 * 1024 * 1024)
+			}
+		}
+	}
+
+	return hash, title, quality, sizeGB
+}
+
+// CrawlAndIngest executes the autonomous media crawler & TorBox ingestion engine:
+// 1. Direct Magnet: if opts.Magnet is provided, validates hash, checks TorBox cache, and ingests immediately.
+// 2. Web / Forum Crawler: if opts.PageURL is provided (e.g. 1TamilMV topic), fetches the page, extracts all magnets, checks TorBox cache, and ingests the best release under opts.MaxSizeGB.
+// 3. Torrent Search: searches torrent streams via Torrentio (supports movie, series with season/episode).
+// 4. Quota protection: strictly filters out files exceeding opts.MaxSizeGB (default 10.0 GB).
+func CrawlAndIngest(ctx context.Context, opts CrawlOptions) (*CrawlResult, error) {
+	if opts.MediaType == "" {
+		opts.MediaType = "movie"
+	}
+	if opts.MaxSizeGB <= 0 {
+		opts.MaxSizeGB = 10.0 // Default 10GB limit per movie/episode
+	}
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+
+	var torboxClient *torbox.Client
+	if opts.TorboxKey != "" {
+		torboxClient = torbox.NewClient(opts.TorboxKey)
+	}
+
+	// Pathway 1: Direct Magnet Link
+	if opts.Magnet != "" {
+		magnet := html.UnescapeString(strings.TrimSpace(opts.Magnet))
+		hash, cleanTitle, quality, size := extractMagnetInfo(magnet)
+		if hash == "" {
+			return nil, fmt.Errorf("invalid magnet link: no 40-character infohash found")
+		}
+		if opts.MaxSizeGB > 0 && size > opts.MaxSizeGB {
+			return &CrawlResult{
+				Query:      opts.Title,
+				Title:      cleanTitle,
+				Quality:    quality,
+				FileSize:   formatFileSize(size),
+				FileSizeGB: size,
+				MagnetURI:  magnet,
+				Message:    fmt.Sprintf("Magnet size (%s) exceeds your %.1f GB limit. Ingestion blocked to preserve TorBox storage.", formatFileSize(size), opts.MaxSizeGB),
+			}, nil
+		}
+
+		isCached := false
+		if torboxClient != nil {
+			if cachedMap, err := torboxClient.CheckCached(ctx, []string{hash}); err == nil && cachedMap != nil {
+				isCached = cachedMap[strings.ToLower(hash)]
+			}
+		}
+
+		res := &CrawlResult{
+			Query:        opts.Title,
+			IMDbID:       opts.IMDbID,
+			Source:       "magnet",
+			Title:        cleanTitle,
+			Quality:      quality,
+			FileSize:     formatFileSize(size),
+			FileSizeGB:   size,
+			MagnetURI:    magnet,
+			TorboxCached: isCached,
+		}
+
+		if opts.AutoIngest && torboxClient != nil {
+			createResp, err := torboxClient.AddTorrent(ctx, magnet)
+			if err != nil {
+				return nil, fmt.Errorf("failed to add magnet to TorBox: %w", err)
+			}
+			res.TorboxIngested = true
+			res.TorboxID = createResp.Data.TorrentID
+			cacheMsg := ""
+			if isCached {
+				cacheMsg = " (Instantly cached on TorBox & ready to stream!)"
+			}
+			res.Message = fmt.Sprintf("Successfully added magnet to TorBox (Torrent ID: %d)%s. Quality: %s.", res.TorboxID, cacheMsg, quality)
+			return res, nil
+		}
+
+		res.Message = fmt.Sprintf("Verified magnet link (%s). Cached on TorBox: %v.", quality, isCached)
+		return res, nil
+	}
+
+	// Pathway 2: Torrent Forum / Webpage Link Crawler (1TamilMV, etc.)
+	if opts.PageURL != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, opts.PageURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch torrent page: %w", err)
+		}
+		defer resp.Body.Close()
+
+		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		if err != nil {
+			return nil, err
+		}
+		body := string(bodyBytes)
+
+		matches := magnetRegex.FindAllString(body, -1)
+		if len(matches) == 0 {
+			return &CrawlResult{
+				Query:   opts.Title,
+				Source:  "web_crawl",
+				Message: fmt.Sprintf("No magnet links found on webpage %s.", opts.PageURL),
+			}, nil
+		}
+
+		type magnetCandidate struct {
+			raw     string
+			hash    string
+			title   string
+			quality string
+			sizeGB  float64
+			cached  bool
+		}
+
+		var candidates []magnetCandidate
+		var hashes []string
+		for _, m := range matches {
+			mClean := html.UnescapeString(m)
+			h, t, q, s := extractMagnetInfo(mClean)
+			if h != "" {
+				candidates = append(candidates, magnetCandidate{
+					raw:     mClean,
+					hash:    h,
+					title:   t,
+					quality: q,
+					sizeGB:  s,
+				})
+				hashes = append(hashes, h)
+			}
+		}
+
+		cachedMap := make(map[string]bool)
+		if torboxClient != nil && len(hashes) > 0 {
+			if tbMap, _ := torboxClient.CheckCached(ctx, hashes); tbMap != nil {
+				cachedMap = tbMap
+			}
+		}
+
+		var allowed []magnetCandidate
+		smallestSize := 0.0
+		for _, c := range candidates {
+			c.cached = cachedMap[strings.ToLower(c.hash)]
+			if c.sizeGB > 0 && (smallestSize == 0 || c.sizeGB < smallestSize) {
+				smallestSize = c.sizeGB
+			}
+			if opts.MaxSizeGB > 0 && c.sizeGB > 0 && c.sizeGB > opts.MaxSizeGB {
+				continue
+			}
+			allowed = append(allowed, c)
+		}
+
+		if len(allowed) == 0 {
+			return &CrawlResult{
+				Query:      opts.Title,
+				Source:     "web_crawl",
+				FileSizeGB: smallestSize,
+				FileSize:   formatFileSize(smallestSize),
+				Message:    fmt.Sprintf("Found %d magnets on page, but all exceed the %.1f GB limit (smallest is %s). Ingestion to TorBox blocked to preserve quota.", len(candidates), opts.MaxSizeGB, formatFileSize(smallestSize)),
+			}, nil
+		}
+
+		best := allowed[0]
+		foundBest := false
+		for _, c := range allowed {
+			if c.cached && (c.quality == "1080p" || c.quality == "4K") {
+				best = c
+				foundBest = true
+				break
+			}
+		}
+		if !foundBest {
+			for _, c := range allowed {
+				if c.cached {
+					best = c
+					foundBest = true
+					break
+				}
+			}
+		}
+		if !foundBest {
+			for _, c := range allowed {
+				if c.quality == "1080p" || c.quality == "4K" {
+					best = c
+					break
+				}
+			}
+		}
+
+		res := &CrawlResult{
+			Query:        opts.Title,
+			IMDbID:       opts.IMDbID,
+			Source:       "web_crawl",
+			Title:        best.title,
+			Quality:      best.quality,
+			FileSize:     formatFileSize(best.sizeGB),
+			FileSizeGB:   best.sizeGB,
+			MagnetURI:    best.raw,
+			TorboxCached: best.cached,
+		}
+
+		if opts.AutoIngest && torboxClient != nil {
+			createResp, err := torboxClient.AddTorrent(ctx, best.raw)
+			if err != nil {
+				return nil, fmt.Errorf("failed to add crawled magnet to TorBox: %w", err)
+			}
+			res.TorboxIngested = true
+			res.TorboxID = createResp.Data.TorrentID
+			cacheMsg := ""
+			if best.cached {
+				cacheMsg = " (Instantly cached on TorBox & ready to stream!)"
+			}
+			res.Message = fmt.Sprintf("Successfully crawled page and added best magnet to TorBox (Torrent ID: %d)%s. Title: %q (%s, %s).", res.TorboxID, cacheMsg, best.title, best.quality, res.FileSize)
+			return res, nil
+		}
+
+		res.Message = fmt.Sprintf("Found %d magnets on page. Best match: %q (%s, %s). Cached on TorBox: %v.", len(candidates), best.title, best.quality, res.FileSize, best.cached)
+		return res, nil
+	}
+
+	// Pathway 3: Search Torrents via Torrentio
+	title := opts.Title
+	imdbID := opts.IMDbID
 	if imdbID == "" && title != "" {
-		resolvedID, err := resolveIMDbFromCinemeta(ctx, httpClient, mediaType, title)
+		resolvedID, err := resolveIMDbFromCinemeta(ctx, httpClient, opts.MediaType, title)
 		if err == nil && resolvedID != "" {
 			imdbID = resolvedID
 		}
 	}
 
-	var torboxClient *torbox.Client
-	if torboxKey != "" {
-		torboxClient = torbox.NewClient(torboxKey)
-	}
-
-	// Tier 1: Search Torrents
 	if imdbID != "" {
-		torrentURL := fmt.Sprintf("https://torrentio.strem.fun/stream/%s/%s.json", mediaType, imdbID)
-		if streamBase != "" {
-			torrentURL = fmt.Sprintf("%s/stream/%s/%s.json", strings.TrimRight(streamBase, "/"), mediaType, imdbID)
+		streamID := imdbID
+		if opts.MediaType == "series" && !strings.Contains(streamID, ":") {
+			s := opts.Season
+			if s <= 0 {
+				s = 1
+			}
+			ep := opts.Episode
+			if ep <= 0 {
+				ep = 1
+			}
+			streamID = fmt.Sprintf("%s:%d:%d", streamID, s, ep)
+		}
+
+		torrentURL := fmt.Sprintf("https://torrentio.strem.fun/stream/%s/%s.json", opts.MediaType, streamID)
+		if opts.StreamBase != "" {
+			torrentURL = fmt.Sprintf("%s/stream/%s/%s.json", strings.TrimRight(opts.StreamBase, "/"), opts.MediaType, streamID)
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, torrentURL, nil)
 		if err == nil {
@@ -160,8 +429,7 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 						}
 					}
 
-					// Find the best stream: filtered by max size (default 10GB), title match, cached first, then 4k/1080p, standalone
-					bestStream, bestSize, smallestSize := pickBestStream(data.Streams, cachedMap, maxSizeGB, title)
+					bestStream, bestSize, smallestSize := pickBestStream(data.Streams, cachedMap, opts.MaxSizeGB, title)
 					bestHash := extractHash(bestStream)
 					if bestHash != "" {
 						bestStream.InfoHash = bestHash
@@ -188,12 +456,12 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 
 						sizeText := ""
 						if sizeFormatted != "" {
-							sizeText = fmt.Sprintf(" Size: %s (limit: %.1f GB).", sizeFormatted, maxSizeGB)
+							sizeText = fmt.Sprintf(" Size: %s (limit: %.1f GB).", sizeFormatted, opts.MaxSizeGB)
 						}
 
 						result := &CrawlResult{
 							Query:        title,
-							IMDbID:       imdbID,
+							IMDbID:       streamID,
 							Source:       "torrent",
 							Title:        cleanTitle,
 							Quality:      quality,
@@ -204,7 +472,7 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 							TorboxCached: isCached,
 						}
 
-						if autoIngest && torboxClient != nil {
+						if opts.AutoIngest && torboxClient != nil {
 							createResp, err := torboxClient.AddTorrent(ctx, magnet)
 							if err == nil && createResp != nil {
 								result.TorboxIngested = true
@@ -220,15 +488,15 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 
 						result.Message = fmt.Sprintf("Found high quality torrent (%s).%s Cached on TorBox: %v.", quality, sizeText, isCached)
 						return result, nil
-					} else if smallestSize > maxSizeGB {
+					} else if smallestSize > opts.MaxSizeGB {
 						return &CrawlResult{
 							Query:      title,
-							IMDbID:     imdbID,
+							IMDbID:     streamID,
 							Source:     "torrent",
 							Title:      title,
 							FileSize:   formatFileSize(smallestSize),
 							FileSizeGB: smallestSize,
-							Message:    fmt.Sprintf("Found %d torrents, but all exceed the %.1f GB limit (smallest is %s). Ingestion to TorBox blocked to protect storage. Pass max_size_gb to override.", len(data.Streams), maxSizeGB, formatFileSize(smallestSize)),
+							Message:    fmt.Sprintf("Found %d torrents, but all exceed the %.1f GB limit (smallest is %s). Ingestion to TorBox blocked to protect storage. Pass max_size_gb to override.", len(data.Streams), opts.MaxSizeGB, formatFileSize(smallestSize)),
 						}, nil
 					}
 				}
@@ -236,12 +504,11 @@ func CrawlAndIngest(ctx context.Context, title, imdbID, mediaType, torboxKey str
 		}
 	}
 
-	// Tier 2: HTTP Stream fallback / Crawl
 	return &CrawlResult{
 		Query:   title,
 		IMDbID:  imdbID,
 		Source:  "none",
-		Message: fmt.Sprintf("No active torrents found for %q. Use unmask_stream with a direct streaming page URL to extract and ingest playable video.", title),
+		Message: fmt.Sprintf("No active torrents found for %q. Provide a direct magnet or torrent forum link (e.g. 1TamilMV topic page) to crawl and ingest to TorBox.", title),
 	}, nil
 }
 
