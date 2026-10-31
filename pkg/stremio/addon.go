@@ -450,7 +450,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					vEntry := map[string]any{
 						"id":       vID,
 						"title":    fmt.Sprintf("%s (%s)", cleanFile, torbox.FormatBytes(f.Size)),
-						"name":     cleanFile,
 						"season":   season,
 						"episode":  episode,
 						"released": time.Now().UTC().Format(time.RFC3339),
@@ -463,7 +462,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			metaVideos = append(metaVideos, map[string]any{
 				"id":       fmt.Sprintf("tb:%s:%d:0", itemType, itemID),
 				"title":    cleanTitle,
-				"name":     cleanTitle,
 				"season":   1,
 				"episode":  1,
 				"released": time.Now().UTC().Format(time.RFC3339),
