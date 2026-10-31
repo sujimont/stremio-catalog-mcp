@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -595,4 +597,52 @@ func FormatBytes(b int64) string {
 	default:
 		return fmt.Sprintf("%d B", b)
 	}
+}
+
+var (
+	UploadYearRegex    = regexp.MustCompile(`\b(19\d\d|20\d\d)\b`)
+	UploadTagsRegex    = regexp.MustCompile(`(?i)\b(s\d+(?:e\d+)?|2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|bluray|blu-ray|bdrip|brrip|web-dl|webrip|web|hdtv|dvdrip|remux|x264|x265|hevc|h264|h265|avc|aac|ac3|dts|atmos|ddp5\.1|dd5\.1|sub|dub|multi|tamil|telugu|hindi|malayalam|kannada|english|proper|repack)\b.*$`)
+	SeasonEpisodeRegex = regexp.MustCompile(`(?i)\b(?:s|season\s*)(\d+)\s*(?:e|ep|episode\s*)(\d+)\b`)
+	UploadDelimRegex   = regexp.MustCompile(`[._]`)
+	UploadCleanRegex   = regexp.MustCompile(`[\[\]\(\)\{\}]`)
+	UploadSpacesRegex  = regexp.MustCompile(`\s+`)
+)
+
+// CleanUploadTitle strips release groups, codecs, quality tags, and extracts year.
+func CleanUploadTitle(raw string) (string, int) {
+	if idx := strings.LastIndex(raw, "."); idx != -1 && len(raw)-idx <= 5 {
+		raw = raw[:idx]
+	}
+	var year int
+	if match := UploadYearRegex.FindString(raw); match != "" {
+		if y, err := strconv.Atoi(match); err == nil && y >= 1900 && y <= time.Now().Year()+2 {
+			year = y
+		}
+	}
+	s := UploadDelimRegex.ReplaceAllString(raw, " ")
+	if year > 0 {
+		if idx := strings.Index(s, strconv.Itoa(year)); idx != -1 {
+			s = s[:idx]
+		}
+	} else {
+		if loc := UploadTagsRegex.FindStringIndex(s); loc != nil {
+			s = s[:loc[0]]
+		}
+	}
+	s = UploadCleanRegex.ReplaceAllString(s, " ")
+	s = strings.TrimSpace(UploadSpacesRegex.ReplaceAllString(s, " "))
+	return s, year
+}
+
+// ParseSeasonEpisode parses S01E02 or Season 1 Episode 2 patterns from filename.
+func ParseSeasonEpisode(raw string) (int, int, bool) {
+	match := SeasonEpisodeRegex.FindStringSubmatch(raw)
+	if len(match) == 3 {
+		s, errS := strconv.Atoi(match[1])
+		e, errE := strconv.Atoi(match[2])
+		if errS == nil && errE == nil {
+			return s, e, true
+		}
+	}
+	return 0, 0, false
 }

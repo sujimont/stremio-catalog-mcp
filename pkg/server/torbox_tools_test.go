@@ -174,14 +174,21 @@ func TestTorboxCatalogSyncTool(t *testing.T) {
 	if len(getRes.Rows) != 1 || getRes.Rows[0].TitleCount != 1 {
 		t.Fatalf("expected 1 title in row, got %v", getRes.Rows)
 	}
+	if getRes.Rows[0].Titles == nil || len(*getRes.Rows[0].Titles) != 1 || (*getRes.Rows[0].Titles)[0].ID != "tb:torrent:10" {
+		t.Fatalf("expected TorBox direct ID 'tb:torrent:10', got %v", getRes.Rows[0].Titles)
+	}
 }
 
 type mockTorboxSyncResolver struct{}
 
 func (m mockTorboxSyncResolver) Resolve(ctx context.Context, mediaType string, input catalog.ItemInput) (catalog.Item, error) {
 	if input.Title == "Movie One" && input.Year == 2024 {
+		id := "tt1111111"
+		if input.ID != "" {
+			id = input.ID
+		}
 		return catalog.Item{
-			ID:    "tt1111111",
+			ID:    id,
 			Type:  mediaType,
 			Title: "Movie One",
 			Year:  2024,

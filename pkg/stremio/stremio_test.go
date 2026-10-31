@@ -189,9 +189,11 @@ func TestTorboxAddonProtocol(t *testing.T) {
 		Contains string
 	}{
 		{"/stremio/test-token/manifest.json", 200, `"id":"torbox_uploads"`},
-		{"/stremio/test-token/manifest.json", 200, `"name":"TorBox Cloud"`},
+		{"/stremio/test-token/manifest.json", 200, `"idPrefixes":["tb:"]`},
+		{"/stremio/test-token/manifest.json", 200, `"id":"torbox_movies"`},
 		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"id":"tb:torrent:101"`},
-		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"name":"Interstellar.2014.1080p.mkv"`},
+		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"Interstellar"`},
+		{"/stremio/test-token/catalog/movie/torbox_movies.json", 200, `"id":"tb:torrent:101"`},
 		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"videos"`},
 		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"tb:torrent:101:0"`},
 		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, `"streams"`},

@@ -3,10 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/amxv/stremio-catalog-mcp/pkg/catalog"
 	"github.com/amxv/stremio-catalog-mcp/pkg/torbox"
@@ -75,11 +72,12 @@ func (rt Runtime) torboxUploadsGet(ctx context.Context, input TorboxUploadsGetIn
 }
 
 type TorboxCatalogSyncInput struct {
-	Profile string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, Suji, default)"`
-	RowName string `json:"row_name,omitempty" jsonschema:"Display name for the catalog row (default 'TorBox Cloud')"`
-	RowType string `json:"row_type,omitempty" jsonschema:"movie or series (default movie)"`
-	Limit   int    `json:"limit,omitempty" jsonschema:"Max completed uploads to resolve and sync (1-50, default 20)"`
-	Mode    string `json:"mode,omitempty" jsonschema:"replace (default) to mirror current uploads, or append"`
+	Profile    string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, Suji, default)"`
+	RowName    string `json:"row_name,omitempty" jsonschema:"Display name for the catalog row (default 'TorBox Cloud')"`
+	RowType    string `json:"row_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"Max completed uploads to resolve and sync (1-50, default 20)"`
+	Mode       string `json:"mode,omitempty" jsonschema:"replace (default) to mirror current uploads, or append"`
+	DirectOnly *bool  `json:"direct_only,omitempty" jsonschema:"If true (default), catalog items use TorBox IDs so Stremio shows ONLY your TorBox stream and no other addons. If false, resolves to IMDb IDs."`
 }
 
 type TorboxCatalogSyncResult struct {
@@ -92,37 +90,8 @@ type TorboxCatalogSyncResult struct {
 	Message      string                 `json:"message"`
 }
 
-var (
-	uploadYearRegex   = regexp.MustCompile(`\b(19\d\d|20\d\d)\b`)
-	uploadTagsRegex   = regexp.MustCompile(`(?i)\b(s\d+(?:e\d+)?|2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|bluray|blu-ray|bdrip|brrip|web-dl|webrip|web|hdtv|dvdrip|remux|x264|x265|hevc|h264|h265|avc|aac|ac3|dts|atmos|ddp5\.1|dd5\.1|sub|dub|multi|tamil|telugu|hindi|malayalam|kannada|english|proper|repack)\b.*$`)
-	uploadDelimRegex  = regexp.MustCompile(`[._]`)
-	uploadCleanRegex  = regexp.MustCompile(`[\[\]\(\)\{\}]`)
-	uploadSpacesRegex = regexp.MustCompile(`\s+`)
-)
-
 func cleanUploadTitle(raw string) (string, int) {
-	if idx := strings.LastIndex(raw, "."); idx != -1 && len(raw)-idx <= 5 {
-		raw = raw[:idx]
-	}
-	var year int
-	if match := uploadYearRegex.FindString(raw); match != "" {
-		if y, err := strconv.Atoi(match); err == nil && y >= 1900 && y <= time.Now().Year()+2 {
-			year = y
-		}
-	}
-	s := uploadDelimRegex.ReplaceAllString(raw, " ")
-	if year > 0 {
-		if idx := strings.Index(s, strconv.Itoa(year)); idx != -1 {
-			s = s[:idx]
-		}
-	} else {
-		if loc := uploadTagsRegex.FindStringIndex(s); loc != nil {
-			s = s[:loc[0]]
-		}
-	}
-	s = uploadCleanRegex.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(uploadSpacesRegex.ReplaceAllString(s, " "))
-	return s, year
+	return torbox.CleanUploadTitle(raw)
 }
 
 func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSyncInput) (TorboxCatalogSyncResult, error) {
@@ -159,6 +128,11 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 		limit = 50
 	}
 
+	directOnly := true
+	if input.DirectOnly != nil {
+		directOnly = *input.DirectOnly
+	}
+
 	client := torbox.NewClient(rt.TorboxAPIKey)
 	if rt.TorboxBaseURL != "" {
 		client.BaseURL = rt.TorboxBaseURL
@@ -180,26 +154,39 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			continue
 		}
 
-		cleanTitle, year := cleanUploadTitle(u.Name)
+		cleanTitle, year := torbox.CleanUploadTitle(u.Name)
 		if cleanTitle == "" {
-			continue
+			cleanTitle = u.Name
 		}
 
-		// Try resolving against Cinemeta
-		resolved, err := rt.Manager.Resolver.Resolve(ctx, rowType, catalog.ItemInput{Title: cleanTitle, Year: year})
-		if err != nil || resolved.ID == "" {
-			continue
-		}
+		if directOnly {
+			tbID := u.StremioID()
+			if seen[tbID] {
+				continue
+			}
+			seen[tbID] = true
+			itemsToSync = append(itemsToSync, catalog.ItemInput{
+				ID:    tbID,
+				Title: cleanTitle,
+				Year:  year,
+			})
+		} else {
+			// Try resolving against Cinemeta
+			resolved, err := rt.Manager.Resolver.Resolve(ctx, rowType, catalog.ItemInput{Title: cleanTitle, Year: year})
+			if err != nil || resolved.ID == "" {
+				continue
+			}
 
-		if seen[resolved.ID] {
-			continue
+			if seen[resolved.ID] {
+				continue
+			}
+			seen[resolved.ID] = true
+			itemsToSync = append(itemsToSync, catalog.ItemInput{
+				ID:    resolved.ID,
+				Title: resolved.Title,
+				Year:  resolved.Year,
+			})
 		}
-		seen[resolved.ID] = true
-		itemsToSync = append(itemsToSync, catalog.ItemInput{
-			ID:    resolved.ID,
-			Title: resolved.Title,
-			Year:  resolved.Year,
-		})
 	}
 
 	if len(itemsToSync) == 0 {

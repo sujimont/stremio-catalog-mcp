@@ -107,26 +107,26 @@ func validateChange(c Change) error {
 		}
 	}
 	for _, id := range c.RemoveTitleIDs {
-		if !ValidIMDbID(id) {
-			return fmt.Errorf("invalid remove_title_ids IMDb ID %q", id)
+		if !ValidItemID(id) {
+			return fmt.Errorf("invalid remove_title_ids ID %q", id)
 		}
 	}
 	for _, id := range c.RestoreTitleIDs {
-		if !ValidIMDbID(id) {
-			return fmt.Errorf("invalid restore_title_ids IMDb ID %q", id)
+		if !ValidItemID(id) {
+			return fmt.Errorf("invalid restore_title_ids ID %q", id)
 		}
 	}
 	for _, id := range c.PruneTitleIDs {
-		if !ValidIMDbID(id) {
-			return fmt.Errorf("invalid prune_title_ids IMDb ID %q", id)
+		if !ValidItemID(id) {
+			return fmt.Errorf("invalid prune_title_ids ID %q", id)
 		}
 	}
 	for _, move := range c.MoveTitles {
-		if !ValidIMDbID(move.ID) || (move.Before == "") == (move.After == "") {
-			return errors.New("each move_titles entry needs a valid IMDb ID and exactly one of before or after")
+		if !ValidItemID(move.ID) || (move.Before == "") == (move.After == "") {
+			return errors.New("each move_titles entry needs a valid ID and exactly one of before or after")
 		}
-		if move.Before != "" && !ValidIMDbID(move.Before) || move.After != "" && !ValidIMDbID(move.After) {
-			return errors.New("move_titles before/after must be IMDb IDs")
+		if move.Before != "" && !ValidItemID(move.Before) || move.After != "" && !ValidItemID(move.After) {
+			return errors.New("move_titles before/after must be valid IDs")
 		}
 		if move.ID == move.Before || move.ID == move.After {
 			return errors.New("a title cannot move relative to itself")

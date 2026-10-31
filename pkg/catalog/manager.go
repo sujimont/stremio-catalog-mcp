@@ -191,12 +191,12 @@ func (m Manager) Upsert(ctx context.Context, in UpsertInput) (Row, error) {
 
 func (m Manager) RemoveItems(ctx context.Context, rowID string, ids []string) (Row, error) {
 	if rowID == "" || len(ids) == 0 {
-		return Row{}, errors.New("row ID and at least one IMDb ID required")
+		return Row{}, errors.New("row ID and at least one ID required")
 	}
 	toRemove := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		if !ValidIMDbID(id) {
-			return Row{}, fmt.Errorf("invalid IMDb ID %q", id)
+		if !ValidItemID(id) {
+			return Row{}, fmt.Errorf("invalid ID %q", id)
 		}
 		toRemove[id] = true
 	}

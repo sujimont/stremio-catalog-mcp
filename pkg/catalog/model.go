@@ -15,7 +15,10 @@ const (
 	MaxItems = 100
 )
 
-var imdbID = regexp.MustCompile(`^tt[0-9]{5,12}$`)
+var (
+	imdbID   = regexp.MustCompile(`^tt[0-9]{5,12}$`)
+	torboxID = regexp.MustCompile(`^tb:(torrent|webdl):[0-9]+(:[0-9]+)?$`)
+)
 
 type Item struct {
 	ID     string `json:"id"`
@@ -64,6 +67,10 @@ func ValidType(t string) bool { return t == "movie" || t == "series" }
 
 func ValidIMDbID(id string) bool { return imdbID.MatchString(id) }
 
+func ValidTorboxID(id string) bool { return torboxID.MatchString(id) }
+
+func ValidItemID(id string) bool { return ValidIMDbID(id) || ValidTorboxID(id) }
+
 func ValidName(name string) bool {
 	name = strings.TrimSpace(name)
 	return name != "" && utf8.RuneCountInString(name) <= 80 && !strings.ContainsAny(name, "\r\n\x00")
@@ -83,11 +90,11 @@ func ValidateItems(items []Item, rowType string) error {
 	}
 	seen := map[string]bool{}
 	for _, item := range items {
-		if !ValidIMDbID(item.ID) || item.Type != rowType || strings.TrimSpace(item.Title) == "" {
-			return errors.New("invalid or mixed-type IMDb item")
+		if !ValidItemID(item.ID) || item.Type != rowType || strings.TrimSpace(item.Title) == "" {
+			return errors.New("invalid or mixed-type item")
 		}
 		if seen[item.ID] {
-			return fmt.Errorf("duplicate IMDb ID %s", item.ID)
+			return fmt.Errorf("duplicate item ID %s", item.ID)
 		}
 		seen[item.ID] = true
 	}

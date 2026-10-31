@@ -36,6 +36,7 @@ type Manifest struct {
 	Description string    `json:"description"`
 	Resources   []string  `json:"resources"`
 	Types       []string  `json:"types"`
+	IDPrefixes  []string  `json:"idPrefixes,omitempty"`
 	Catalogs    []Catalog `json:"catalogs"`
 }
 
@@ -82,11 +83,12 @@ func BuildManifest(state catalog.State, opts ...ManifestOption) Manifest {
 		Resources:   resources, Types: types, Catalogs: []Catalog{},
 	}
 	if cfg.HasTorbox {
-		manifest.Catalogs = append(manifest.Catalogs, Catalog{
-			Type: "other",
-			ID:   TorboxCatalogID,
-			Name: TorboxCatalogName,
-		})
+		manifest.IDPrefixes = []string{"tb:"}
+		manifest.Catalogs = append(manifest.Catalogs,
+			Catalog{Type: "movie", ID: "torbox_movies", Name: "TorBox Movies"},
+			Catalog{Type: "series", ID: "torbox_series", Name: "TorBox Series"},
+			Catalog{Type: "other", ID: TorboxCatalogID, Name: TorboxCatalogName},
+		)
 	}
 	for _, row := range state.Rows {
 		if row.Hidden {
@@ -202,7 +204,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response = BuildManifest(state, WithTorbox(hasTorbox))
 		w.Header().Set("Cache-Control", "private, max-age=15, must-revalidate")
 	case "catalog":
-		if id == TorboxCatalogID || id == "torbox_cloud" {
+		if id == TorboxCatalogID || id == "torbox_cloud" || id == "torbox_movies" || id == "torbox_series" {
 			if !hasTorbox {
 				http.NotFound(w, r)
 				return
@@ -218,13 +220,48 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			var metas []map[string]any
 			for _, u := range uploads {
+				cleanTitle, year := torbox.CleanUploadTitle(u.Name)
+				if cleanTitle == "" {
+					cleanTitle = u.Name
+				}
+				isSeries := false
+				if _, _, ok := torbox.ParseSeasonEpisode(u.Name); ok {
+					isSeries = true
+				} else {
+					for _, f := range u.Files {
+						if _, _, ok := torbox.ParseSeasonEpisode(f.Name); ok {
+							isSeries = true
+							break
+						}
+					}
+				}
+
+				if id == "torbox_movies" && isSeries {
+					continue
+				}
+				if id == "torbox_series" && !isSeries {
+					continue
+				}
+
+				itemType := mediaType
+				if itemType == "" || itemType == "other" {
+					if isSeries {
+						itemType = "series"
+					} else {
+						itemType = "movie"
+					}
+				}
+
 				preview := map[string]any{
 					"id":          u.StremioID(),
-					"type":        "other",
-					"name":        u.Name,
+					"type":        itemType,
+					"name":        cleanTitle,
 					"releaseInfo": u.SizeFormatted + " • " + u.Status,
-					"description": fmt.Sprintf("TorBox %s\nSize: %s\nStatus: %s\nProgress: %.0f%%\nFiles: %d",
-						strings.ToUpper(u.Type), u.SizeFormatted, u.Status, u.Progress*100, len(u.Files)),
+					"description": fmt.Sprintf("TorBox %s\nOriginal: %s\nSize: %s\nStatus: %s\nProgress: %.0f%%\nFiles: %d",
+						strings.ToUpper(u.Type), u.Name, u.SizeFormatted, u.Status, u.Progress*100, len(u.Files)),
+				}
+				if year > 0 {
+					preview["releaseInfo"] = strconv.Itoa(year) + " • " + u.SizeFormatted
 				}
 				metas = append(metas, preview)
 			}
@@ -321,6 +358,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			name = fmt.Sprintf("TorBox %s #%d", strings.ToUpper(itemType), itemID)
 		}
 
+		cleanTitle, year := torbox.CleanUploadTitle(name)
+		if cleanTitle == "" {
+			cleanTitle = name
+		}
+
 		if len(files) > 0 {
 			videoIdx := 0
 			for _, f := range files {
@@ -331,30 +373,51 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				if isVideoExtension(ext) || len(files) == 1 {
 					videoIdx++
 					vID := fmt.Sprintf("tb:%s:%d:%d", itemType, itemID, f.ID)
-					metaVideos = append(metaVideos, map[string]any{
+					vEntry := map[string]any{
 						"id":       vID,
 						"title":    fmt.Sprintf("%s (%s)", f.Name, torbox.FormatBytes(f.Size)),
 						"released": time.Now().Format("2006-01-02"),
-						"episode":  videoIdx,
-					})
+					}
+					if s, ep, ok := torbox.ParseSeasonEpisode(f.Name); ok {
+						vEntry["season"] = s
+						vEntry["episode"] = ep
+					} else if s, ep, ok := torbox.ParseSeasonEpisode(name); ok {
+						vEntry["season"] = s
+						vEntry["episode"] = ep
+					} else {
+						vEntry["episode"] = videoIdx
+					}
+					metaVideos = append(metaVideos, vEntry)
 				}
 			}
 		}
 		if len(metaVideos) == 0 {
 			metaVideos = append(metaVideos, map[string]any{
 				"id":       fmt.Sprintf("tb:%s:%d:0", itemType, itemID),
-				"title":    name,
+				"title":    cleanTitle,
 				"released": time.Now().Format("2006-01-02"),
 			})
 		}
 
+		outType := mediaType
+		if outType == "" || outType == "other" {
+			if len(metaVideos) > 1 {
+				outType = "series"
+			} else {
+				outType = "movie"
+			}
+		}
+
 		metaDetail := map[string]any{
 			"id":          id,
-			"type":        "other",
-			"name":        name,
-			"description": fmt.Sprintf("TorBox Cloud Upload\nType: %s\nSize: %s\nStatus: %s\nProgress: %.0f%%\nTotal Files: %d", strings.ToUpper(itemType), torbox.FormatBytes(size), status, progress*100, len(files)),
+			"type":        outType,
+			"name":        cleanTitle,
+			"description": fmt.Sprintf("TorBox Cloud Upload\nType: %s\nOriginal Name: %s\nSize: %s\nStatus: %s\nProgress: %.0f%%\nTotal Files: %d", strings.ToUpper(itemType), name, torbox.FormatBytes(size), status, progress*100, len(files)),
 			"releaseInfo": torbox.FormatBytes(size) + " • " + status,
 			"videos":      metaVideos,
+		}
+		if year > 0 {
+			metaDetail["releaseInfo"] = strconv.Itoa(year) + " • " + torbox.FormatBytes(size)
 		}
 		response = map[string]any{"meta": metaDetail, "cacheMaxAge": 60}
 		w.Header().Set("Cache-Control", "private, max-age=60, must-revalidate")

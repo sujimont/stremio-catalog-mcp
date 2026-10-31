@@ -64,8 +64,30 @@ func (c Cinemeta) Resolve(ctx context.Context, mediaType string, input ItemInput
 	input.Title = strings.TrimSpace(input.Title)
 	var m meta
 	if input.ID != "" {
+		if ValidTorboxID(input.ID) {
+			if input.Title != "" {
+				var resp struct {
+					Metas []meta `json:"metas"`
+				}
+				route := "/catalog/" + mediaType + "/top/search=" + url.PathEscape(input.Title) + ".json"
+				if err := c.fetch(ctx, route, &resp); err == nil && len(resp.Metas) > 0 {
+					for _, candidate := range resp.Metas {
+						if candidate.Type == mediaType {
+							return Item{
+								ID:     input.ID,
+								Type:   mediaType,
+								Title:  candidate.Name,
+								Year:   yearFromRelease(candidate.ReleaseInfo),
+								Poster: candidate.Poster,
+							}, nil
+						}
+					}
+				}
+			}
+			return Item{ID: input.ID, Type: mediaType, Title: input.Title, Year: input.Year}, nil
+		}
 		if !ValidIMDbID(input.ID) {
-			return Item{}, fmt.Errorf("%q is not an IMDb ID (tt...)", input.ID)
+			return Item{}, fmt.Errorf("%q is not an IMDb ID (tt...) or TorBox ID (tb:...)", input.ID)
 		}
 		var resp struct {
 			Meta meta `json:"meta"`
