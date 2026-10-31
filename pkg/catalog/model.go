@@ -50,6 +50,7 @@ type State struct {
 
 type ItemInput struct {
 	ID     string `json:"id,omitempty" jsonschema:"IMDb ID (tt...) or TorBox ID (tb:...), or omit to resolve by title"`
+	Type   string `json:"type,omitempty" jsonschema:"movie or series; optional, overrides row type for mixed rows"`
 	Title  string `json:"title,omitempty" jsonschema:"Movie or series title, used for Cinemeta lookup"`
 	Year   int    `json:"year,omitempty" jsonschema:"Release year to disambiguate matching titles"`
 	Poster string `json:"poster,omitempty" jsonschema:"Optional poster image URL for the title"`
@@ -91,8 +92,8 @@ func ValidateItems(items []Item, rowType string) error {
 	}
 	seen := map[string]bool{}
 	for _, item := range items {
-		if !ValidItemID(item.ID) || item.Type != rowType || strings.TrimSpace(item.Title) == "" {
-			return errors.New("invalid or mixed-type item")
+		if !ValidItemID(item.ID) || !ValidType(item.Type) || strings.TrimSpace(item.Title) == "" {
+			return errors.New("invalid or untyped item")
 		}
 		if seen[item.ID] {
 			return fmt.Errorf("duplicate item ID %s", item.ID)

@@ -101,7 +101,23 @@ func BuildManifest(state catalog.State, opts ...ManifestOption) Manifest {
 		if row.Hidden {
 			continue
 		}
-		manifest.Catalogs = append(manifest.Catalogs, Catalog{Type: row.Type, ID: row.ID, Name: row.Name})
+		hasMovie := false
+		hasSeries := false
+		for _, it := range row.Items {
+			if it.Type == "movie" {
+				hasMovie = true
+			} else if it.Type == "series" {
+				hasSeries = true
+			}
+		}
+		if hasMovie && hasSeries {
+			manifest.Catalogs = append(manifest.Catalogs,
+				Catalog{Type: "movie", ID: row.ID, Name: row.Name},
+				Catalog{Type: "series", ID: row.ID, Name: row.Name},
+			)
+		} else {
+			manifest.Catalogs = append(manifest.Catalogs, Catalog{Type: row.Type, ID: row.ID, Name: row.Name})
+		}
 	}
 	return manifest
 }
@@ -295,9 +311,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var row *catalog.Row
 		for i := range state.Rows {
-			if state.Rows[i].ID == id && state.Rows[i].Type == mediaType {
-				row = &state.Rows[i]
-				break
+			if state.Rows[i].ID == id {
+				if state.Rows[i].Type == mediaType {
+					row = &state.Rows[i]
+					break
+				}
+				for _, it := range state.Rows[i].Items {
+					if it.Type == mediaType {
+						row = &state.Rows[i]
+						break
+					}
+				}
+				if row != nil {
+					break
+				}
 			}
 		}
 		if row == nil {

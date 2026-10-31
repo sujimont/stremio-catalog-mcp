@@ -200,10 +200,23 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			}
 		}
 
-		if input.RowType == "" {
-			if _, _, isSE := torbox.ParseSeasonEpisode(u.Name); isSE {
-				rowType = "series"
+		itemType := "movie"
+		if _, _, isSE := torbox.ParseSeasonEpisode(u.Name); isSE {
+			itemType = "series"
+		} else {
+			for _, f := range u.Files {
+				if _, _, isSE := torbox.ParseSeasonEpisode(f.Name); isSE {
+					itemType = "series"
+					break
+				}
 			}
+		}
+		if input.RowType != "" && input.RowType != "torbox" {
+			itemType = input.RowType
+		}
+
+		if input.RowType == "" {
+			rowType = itemType
 		}
 
 		if rowName == "TorBox Cloud" && (targetID > 0 || input.Query != "") && input.RowName == "" {
@@ -218,13 +231,14 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			seen[tbID] = true
 			itemsToSync = append(itemsToSync, catalog.ItemInput{
 				ID:     tbID,
+				Type:   itemType,
 				Title:  cleanTitle,
 				Year:   year,
 				Poster: input.Poster,
 			})
 		} else {
 			// Try resolving against Cinemeta
-			resolved, err := rt.Manager.Resolver.Resolve(ctx, rowType, catalog.ItemInput{Title: cleanTitle, Year: year})
+			resolved, err := rt.Manager.Resolver.Resolve(ctx, itemType, catalog.ItemInput{ID: u.StremioID(), Type: itemType, Title: cleanTitle, Year: year, Poster: input.Poster})
 			if err != nil || resolved.ID == "" {
 				continue
 			}
@@ -235,6 +249,7 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			seen[resolved.ID] = true
 			itemsToSync = append(itemsToSync, catalog.ItemInput{
 				ID:     resolved.ID,
+				Type:   resolved.Type,
 				Title:  resolved.Title,
 				Year:   resolved.Year,
 				Poster: resolved.Poster,
@@ -255,7 +270,7 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 	var existingRowID string
 	if err == nil {
 		for _, r := range state.Rows {
-			if strings.EqualFold(r.Name, rowName) && r.Type == rowType {
+			if strings.EqualFold(r.Name, rowName) {
 				existingRowID = r.ID
 				break
 			}
