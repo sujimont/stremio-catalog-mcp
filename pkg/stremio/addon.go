@@ -503,7 +503,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			metaDetail["releaseInfo"] = torbox.FormatBytes(size) + " • " + status
 		}
-		if len(metaVideos) > 0 {
+		if outType == "movie" && len(metaVideos) == 1 {
 			if firstID, ok := metaVideos[0]["id"].(string); ok && firstID != "" {
 				metaDetail["behaviorHints"] = map[string]any{
 					"defaultVideoId": firstID,
