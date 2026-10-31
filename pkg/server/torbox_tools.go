@@ -42,7 +42,7 @@ func (rt Runtime) torboxUploadsGet(ctx context.Context, input TorboxUploadsGetIn
 	var filtered []torbox.UploadItem
 	for _, u := range uploads {
 		if input.Type != "" && input.Type != "all" {
-			if !strings.EqualFold(u.Type, input.Type) {
+			if !strings.EqualFold(u.Type, input.Type) && !strings.EqualFold(u.Type+"s", input.Type) {
 				continue
 			}
 		}
@@ -94,7 +94,7 @@ type TorboxCatalogSyncResult struct {
 
 var (
 	uploadYearRegex   = regexp.MustCompile(`\b(19\d\d|20\d\d)\b`)
-	uploadTagsRegex   = regexp.MustCompile(`(?i)\b(2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|bluray|blu-ray|bdrip|brrip|web-dl|webrip|web|hdtv|dvdrip|remux|x264|x265|hevc|h264|h265|avc|aac|ac3|dts|atmos|ddp5\.1|dd5\.1|sub|dub|multi|tamil|telugu|hindi|malayalam|kannada|english|proper|repack)\b.*$`)
+	uploadTagsRegex   = regexp.MustCompile(`(?i)\b(s\d+(?:e\d+)?|2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|bluray|blu-ray|bdrip|brrip|web-dl|webrip|web|hdtv|dvdrip|remux|x264|x265|hevc|h264|h265|avc|aac|ac3|dts|atmos|ddp5\.1|dd5\.1|sub|dub|multi|tamil|telugu|hindi|malayalam|kannada|english|proper|repack)\b.*$`)
 	uploadDelimRegex  = regexp.MustCompile(`[._]`)
 	uploadCleanRegex  = regexp.MustCompile(`[\[\]\(\)\{\}]`)
 	uploadSpacesRegex = regexp.MustCompile(`\s+`)
@@ -222,17 +222,35 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 		}
 	}
 
+	var change catalog.Change
+	if existingRowID == "" {
+		change = catalog.Change{
+			Action: "create",
+			Name:   rowName,
+			Type:   rowType,
+			Titles: itemsToSync,
+		}
+	} else {
+		if mode == "append" {
+			change = catalog.Change{
+				Action:    "edit",
+				RowID:     existingRowID,
+				Name:      rowName,
+				AddTitles: itemsToSync,
+			}
+		} else {
+			change = catalog.Change{
+				Action:        "edit",
+				RowID:         existingRowID,
+				Name:          rowName,
+				ReplaceTitles: &itemsToSync,
+			}
+		}
+	}
+
 	batchInput := catalog.BatchInput{
 		Profile: input.Profile,
-		Upsert: []catalog.UpsertInput{
-			{
-				ID:    existingRowID,
-				Name:  rowName,
-				Type:  rowType,
-				Items: itemsToSync,
-				Mode:  mode,
-			},
-		},
+		Changes: []catalog.Change{change},
 	}
 
 	updateRes, err := rt.catalogsUpdate(ctx, batchInput)
@@ -242,7 +260,7 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 
 	targetRowID := existingRowID
 	if targetRowID == "" && len(updateRes.Changes) > 0 {
-		targetRowID = updateRes.Changes[0].ID
+		targetRowID = updateRes.Changes[0].RowID
 	}
 
 	return TorboxCatalogSyncResult{

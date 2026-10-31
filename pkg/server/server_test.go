@@ -33,8 +33,8 @@ func TestMCPToolAnnotations(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Result.Tools) != 13 {
-		t.Fatalf("expected exactly 13 tools, received %d", len(response.Result.Tools))
+	if len(response.Result.Tools) != 15 {
+		t.Fatalf("expected exactly 15 tools, received %d", len(response.Result.Tools))
 	}
 
 	readOnlyExpected := map[string]bool{
@@ -44,6 +44,7 @@ func TestMCPToolAnnotations(t *testing.T) {
 		"stream_availability_check": true,
 		"tmdb_discover":             true,
 		"tmdb_similar":              true,
+		"torbox_uploads_get":        true,
 	}
 
 	expected := map[string]bool{
@@ -60,6 +61,8 @@ func TestMCPToolAnnotations(t *testing.T) {
 		"play_on_tv":                true,
 		"addons_manage":             true,
 		"devices_manage":            true,
+		"torbox_uploads_get":        true,
+		"torbox_catalog_sync":       true,
 	}
 
 	for _, tool := range response.Result.Tools {

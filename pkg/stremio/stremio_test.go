@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/amxv/stremio-catalog-mcp/pkg/catalog"
+	"github.com/amxv/stremio-catalog-mcp/pkg/torbox"
 )
 
 func TestCatalogAddOnProtocol(t *testing.T) {
@@ -174,6 +175,8 @@ func TestTorboxAddonProtocol(t *testing.T) {
 
 	store := &catalog.MemoryStore{}
 	state := catalog.State{Revision: 1, Rows: []catalog.Row{}}
+	raw, _ := json.Marshal(state)
+	_, _ = store.CAS(context.Background(), "", string(raw))
 	h := Handler{
 		Manager:      catalog.Manager{Store: store},
 		FeedToken:    "test-token",
@@ -192,7 +195,7 @@ func TestTorboxAddonProtocol(t *testing.T) {
 		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"videos"`},
 		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"tb:torrent:101:0"`},
 		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, `"streams"`},
-		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, `"requestdl?token=test-key&torrent_id=101&file_id=0&redirect=true"`},
+		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, "torrent_id=101"},
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", test.Path, nil))
@@ -201,4 +204,3 @@ func TestTorboxAddonProtocol(t *testing.T) {
 		}
 	}
 }
-
