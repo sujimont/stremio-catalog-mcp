@@ -155,6 +155,7 @@ func TestTorboxCatalogSyncTool(t *testing.T) {
 	syncRes, err := rt.torboxCatalogSync(context.Background(), TorboxCatalogSyncInput{
 		RowName: "TorBox Movies",
 		RowType: "movie",
+		Query:   "Movie One",
 	})
 	if err != nil {
 		t.Fatalf("torboxCatalogSync failed: %v", err)
@@ -164,6 +165,19 @@ func TestTorboxCatalogSyncTool(t *testing.T) {
 	}
 	if syncRes.RowName != "TorBox Movies" {
 		t.Errorf("expected row name 'TorBox Movies', got %s", syncRes.RowName)
+	}
+
+	// Verify unmatched query returns 0
+	unmatchedRes, err := rt.torboxCatalogSync(context.Background(), TorboxCatalogSyncInput{
+		RowName: "TorBox Movies",
+		RowType: "movie",
+		Query:   "NonExistentTitleXYZ",
+	})
+	if err != nil {
+		t.Fatalf("unmatched query failed: %v", err)
+	}
+	if unmatchedRes.MatchedCount != 0 {
+		t.Errorf("expected 0 matches for NonExistentTitleXYZ, got %d", unmatchedRes.MatchedCount)
 	}
 
 	// Verify the row exists in catalogs

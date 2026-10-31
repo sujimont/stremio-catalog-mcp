@@ -84,11 +84,6 @@ func BuildManifest(state catalog.State, opts ...ManifestOption) Manifest {
 	}
 	if cfg.HasTorbox {
 		manifest.IDPrefixes = []string{"tb:"}
-		manifest.Catalogs = append(manifest.Catalogs,
-			Catalog{Type: "movie", ID: "torbox_movies", Name: "TorBox Movies"},
-			Catalog{Type: "series", ID: "torbox_series", Name: "TorBox Series"},
-			Catalog{Type: "other", ID: TorboxCatalogID, Name: TorboxCatalogName},
-		)
 	}
 	for _, row := range state.Rows {
 		if row.Hidden {

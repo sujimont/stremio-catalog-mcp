@@ -174,7 +174,19 @@ func TestTorboxAddonProtocol(t *testing.T) {
 	}
 
 	store := &catalog.MemoryStore{}
-	state := catalog.State{Revision: 1, Rows: []catalog.Row{}}
+	state := catalog.State{
+		Revision: 1,
+		Rows: []catalog.Row{
+			{
+				ID:   "row_torbox",
+				Name: "My TorBox",
+				Type: "movie",
+				Items: []catalog.Item{
+					{ID: "tb:torrent:101", Title: "Interstellar", Type: "movie"},
+				},
+			},
+		},
+	}
 	raw, _ := json.Marshal(state)
 	_, _ = store.CAS(context.Background(), "", string(raw))
 	h := Handler{
@@ -184,25 +196,28 @@ func TestTorboxAddonProtocol(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		Path     string
-		Status   int
-		Contains string
+		Path        string
+		Status      int
+		Contains    string
+		NotContains string
 	}{
-		{"/stremio/test-token/manifest.json", 200, `"id":"torbox_uploads"`},
-		{"/stremio/test-token/manifest.json", 200, `"idPrefixes":["tb:"]`},
-		{"/stremio/test-token/manifest.json", 200, `"id":"torbox_movies"`},
-		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"id":"tb:torrent:101"`},
-		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"Interstellar"`},
-		{"/stremio/test-token/catalog/movie/torbox_movies.json", 200, `"id":"tb:torrent:101"`},
-		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"videos"`},
-		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"tb:torrent:101:0"`},
-		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, `"streams"`},
-		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, "torrent_id=101"},
+		{"/stremio/test-token/manifest.json", 200, `"id":"row_torbox"`, `"torbox_uploads"`},
+		{"/stremio/test-token/manifest.json", 200, `"idPrefixes":["tb:"]`, `"torbox_movies"`},
+		{"/stremio/test-token/catalog/movie/row_torbox.json", 200, `"id":"tb:torrent:101"`, ""},
+		{"/stremio/test-token/catalog/movie/row_torbox.json", 200, `"Interstellar"`, ""},
+		{"/stremio/test-token/meta/movie/tb:torrent:101.json", 200, `"videos"`, ""},
+		{"/stremio/test-token/meta/movie/tb:torrent:101.json", 200, `"tb:torrent:101:0"`, ""},
+		{"/stremio/test-token/stream/movie/tb:torrent:101:0.json", 200, `"streams"`, ""},
+		{"/stremio/test-token/stream/movie/tb:torrent:101:0.json", 200, "torrent_id=101", ""},
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", test.Path, nil))
-		if rec.Code != test.Status || !strings.Contains(rec.Body.String(), test.Contains) {
-			t.Errorf("%s got HTTP %d: %s", test.Path, rec.Code, rec.Body.String())
+		body := rec.Body.String()
+		if rec.Code != test.Status || !strings.Contains(body, test.Contains) {
+			t.Errorf("%s got HTTP %d: %s (expected to contain %s)", test.Path, rec.Code, body, test.Contains)
+		}
+		if test.NotContains != "" && strings.Contains(body, test.NotContains) {
+			t.Errorf("%s body contains %s (should have been removed)", test.Path, test.NotContains)
 		}
 	}
 }

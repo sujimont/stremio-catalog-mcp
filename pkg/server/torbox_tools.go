@@ -75,8 +75,10 @@ type TorboxCatalogSyncInput struct {
 	Profile    string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, Suji, default)"`
 	RowName    string `json:"row_name,omitempty" jsonschema:"Display name for the catalog row (default 'TorBox Cloud')"`
 	RowType    string `json:"row_type,omitempty" jsonschema:"movie or series (default movie)"`
+	Query      string `json:"query,omitempty" jsonschema:"Optional search filter (e.g. 'Severance', 'Inception') to sync only matching TorBox uploads"`
+	UploadIDs  []int  `json:"upload_ids,omitempty" jsonschema:"Optional list of specific TorBox upload/torrent IDs to add"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"Max completed uploads to resolve and sync (1-50, default 20)"`
-	Mode       string `json:"mode,omitempty" jsonschema:"replace (default) to mirror current uploads, or append"`
+	Mode       string `json:"mode,omitempty" jsonschema:"replace or append (defaults to append when query or upload_ids is given, otherwise replace)"`
 	DirectOnly *bool  `json:"direct_only,omitempty" jsonschema:"If true (default), catalog items use TorBox IDs so Stremio shows ONLY your TorBox stream and no other addons. If false, resolves to IMDb IDs."`
 }
 
@@ -117,7 +119,11 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 
 	mode := input.Mode
 	if mode == "" {
-		mode = "replace"
+		if input.Query != "" || len(input.UploadIDs) > 0 {
+			mode = "append"
+		} else {
+			mode = "replace"
+		}
 	}
 
 	limit := input.Limit
@@ -154,9 +160,29 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			continue
 		}
 
+		if len(input.UploadIDs) > 0 {
+			matched := false
+			for _, id := range input.UploadIDs {
+				if u.ID == id {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+
 		cleanTitle, year := torbox.CleanUploadTitle(u.Name)
 		if cleanTitle == "" {
 			cleanTitle = u.Name
+		}
+
+		if input.Query != "" {
+			q := strings.ToLower(strings.TrimSpace(input.Query))
+			if !strings.Contains(strings.ToLower(u.Name), q) && !strings.Contains(strings.ToLower(cleanTitle), q) {
+				continue
+			}
 		}
 
 		if directOnly {
