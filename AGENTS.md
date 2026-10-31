@@ -13,7 +13,9 @@ This repository is an autonomous **Stremio & Debrid AI Agent MCP Server** (`suji
    - `stream_availability_check`: Verifies stream health, seeders, quality (4K/1080p), and TorBox cloud cache status for movies and series episodes (`tt...:season:episode`).
 5. **Deep Discovery & Regional Cinema**:
    - `tmdb_discover` and `tmdb_similar`: Discovers regional cinema (Tamil, Malayalam, Hindi, Korean, etc.), OTT provider streams, and similar titles.
-6. **Autonomous Crawling & TorBox Ingestion**:
+6. **Autonomous Crawling & TorBox Cloud**:
+   - `torbox_uploads_get`: Lists active, downloading, and completed torrents/web downloads from TorBox.
+   - `torbox_catalog_sync`: Syncs completed TorBox releases into custom Stremio rows, auto-resolving IMDb metadata with Cinemeta.
    - `media_crawl_and_ingest`: Accepts direct magnets or crawls torrent forum pages (e.g., 1TamilMV topics), enforces max size limits (default 10 GB), and auto-ingests cached releases to TorBox.
    - `stream_unmask`: Resolves masked embed players into direct video streams with optional TorBox WebDL ingestion.
 7. **Addon Management**:
@@ -42,8 +44,8 @@ This repository is an autonomous **Stremio & Debrid AI Agent MCP Server** (`suji
    - Secrets (`TORBOX_API_KEY`, `TMDB_API_KEY`, `STREMIO_AUTH_KEY`, `MCP_API_KEY`) MUST be stored in server environment variables only.
    - Never accept secrets as tool arguments in prompt context. Never extract keys from installed addon transport URLs.
 4. **Honest Tool Annotations**:
-   - Informational/query tools (`catalogs_get`, `home_layout_get`, `watch_history_get`, `stream_availability_check`, `tmdb_discover`, `tmdb_similar`) advertise `annotations.readOnlyHint: true`.
-   - Mutating tools (`catalogs_update`, `home_layout_update`, `media_crawl_and_ingest`, `stream_unmask`, `play_on_tv`, `addons_manage`, `devices_manage`) advertise `annotations.readOnlyHint: false`. Destructive operations set `destructiveHint: true`.
+   - Informational/query tools (`catalogs_get`, `home_layout_get`, `watch_history_get`, `stream_availability_check`, `tmdb_discover`, `tmdb_similar`, `torbox_uploads_get`) advertise `annotations.readOnlyHint: true`.
+   - Mutating tools (`catalogs_update`, `home_layout_update`, `media_crawl_and_ingest`, `stream_unmask`, `play_on_tv`, `addons_manage`, `devices_manage`, `torbox_catalog_sync`) advertise `annotations.readOnlyHint: false`. Destructive operations set `destructiveHint: true`.
    - Omit `openWorldHint`.
 5. **Authentication**:
    - MCP authentication supports `Authorization: Bearer <key>` header (recommended) or `?key=<key>` query parameter. Missing keys fail closed with HTTP 503. Invalid keys return HTTP 401.

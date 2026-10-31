@@ -22,6 +22,8 @@ type AccountAPI struct {
 	BaseURL string
 	AuthKey string
 	Client  *http.Client
+	// TorboxEnabled includes TorBox cloud catalogs and streaming resources in manifest sync.
+	TorboxEnabled bool
 	// BeforeReplace must successfully persist a private snapshot of the current
 	// account collection before the whole-collection Stremio API write proceeds.
 	BeforeReplace func(context.Context, []Descriptor) error
@@ -172,7 +174,7 @@ func (a AccountAPI) Sync(ctx context.Context, state catalog.State, manifestURL s
 	if len(current) == 0 {
 		return errors.New("refusing to synchronize an empty Stremio add-on collection")
 	}
-	manifest, err := json.Marshal(BuildManifest(state))
+	manifest, err := json.Marshal(BuildManifest(state, WithTorbox(a.TorboxEnabled)))
 	if err != nil {
 		return err
 	}
@@ -225,7 +227,7 @@ func (a AccountAPI) Sync(ctx context.Context, state catalog.State, manifestURL s
 		if IsOurAddon(descriptorID(entry)) {
 			found++
 			var actual Manifest
-			expected := BuildManifest(state)
+			expected := BuildManifest(state, WithTorbox(a.TorboxEnabled))
 			if json.Unmarshal(entry.Manifest, &actual) != nil || !reflect.DeepEqual(actual.Catalogs, expected.Catalogs) {
 				return errors.New("Stremio reported an older manifest; sync may need retry")
 			}

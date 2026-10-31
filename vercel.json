@@ -9,12 +9,24 @@
     { "source": "/mcp", "destination": "/api/mcp" },
     { "source": "/stremio/:token/manifest.json", "destination": "/api/mcp?token=:token&resource=manifest" },
     { "source": "/stremio/:token/catalog/:type/:id.json", "destination": "/api/mcp?token=:token&resource=catalog&type=:type&id=:id" },
+    { "source": "/stremio/:token/catalog/:type/:id/:extra.json", "destination": "/api/mcp?token=:token&resource=catalog&type=:type&id=:id&extra=:extra" },
+    { "source": "/stremio/:token/meta/:type/:id.json", "destination": "/api/mcp?token=:token&resource=meta&type=:type&id=:id" },
+    { "source": "/stremio/:token/stream/:type/:id.json", "destination": "/api/mcp?token=:token&resource=stream&type=:type&id=:id" },
     { "source": "/stremio/:token/:version/manifest.json", "destination": "/api/mcp?token=:token&resource=manifest" },
     { "source": "/stremio/:token/:version/catalog/:type/:id.json", "destination": "/api/mcp?token=:token&resource=catalog&type=:type&id=:id" },
+    { "source": "/stremio/:token/:version/catalog/:type/:id/:extra.json", "destination": "/api/mcp?token=:token&resource=catalog&type=:type&id=:id&extra=:extra" },
+    { "source": "/stremio/:token/:version/meta/:type/:id.json", "destination": "/api/mcp?token=:token&resource=meta&type=:type&id=:id" },
+    { "source": "/stremio/:token/:version/stream/:type/:id.json", "destination": "/api/mcp?token=:token&resource=stream&type=:type&id=:id" },
     { "source": "/stremio/:token/p/:profile/manifest.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=manifest" },
     { "source": "/stremio/:token/p/:profile/catalog/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=catalog&type=:type&id=:id" },
+    { "source": "/stremio/:token/p/:profile/catalog/:type/:id/:extra.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=catalog&type=:type&id=:id&extra=:extra" },
+    { "source": "/stremio/:token/p/:profile/meta/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=meta&type=:type&id=:id" },
+    { "source": "/stremio/:token/p/:profile/stream/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=stream&type=:type&id=:id" },
     { "source": "/stremio/:token/p/:profile/:version/manifest.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=manifest" },
-    { "source": "/stremio/:token/p/:profile/:version/catalog/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=catalog&type=:type&id=:id" }
+    { "source": "/stremio/:token/p/:profile/:version/catalog/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=catalog&type=:type&id=:id" },
+    { "source": "/stremio/:token/p/:profile/:version/catalog/:type/:id/:extra.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=catalog&type=:type&id=:id&extra=:extra" },
+    { "source": "/stremio/:token/p/:profile/:version/meta/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=meta&type=:type&id=:id" },
+    { "source": "/stremio/:token/p/:profile/:version/stream/:type/:id.json", "destination": "/api/mcp?token=:token&profile=:profile&resource=stream&type=:type&id=:id" }
   ],
   "git": {
     "deploymentEnabled": {

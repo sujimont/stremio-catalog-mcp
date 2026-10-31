@@ -117,3 +117,88 @@ func TestAccountDescriptorUnknownFieldsRoundTrip(t *testing.T) {
 		t.Fatalf("unknown addon fields lost: %s", after)
 	}
 }
+
+func TestTorboxAddonProtocol(t *testing.T) {
+	torboxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/torrents/mylist":
+			if r.URL.Query().Get("id") == "101" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": true,
+					"data": map[string]any{
+						"id":             101,
+						"name":           "Interstellar.2014.1080p.mkv",
+						"size":           2147483648,
+						"download_state": "completed",
+						"progress":       1.0,
+						"files": []map[string]any{
+							{"id": 0, "name": "Interstellar.2014.1080p.mkv", "size": 2147483648},
+						},
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": []map[string]any{
+					{
+						"id":             101,
+						"name":           "Interstellar.2014.1080p.mkv",
+						"size":           2147483648,
+						"download_state": "completed",
+						"progress":       1.0,
+						"created_at":     "2026-01-01T12:00:00Z",
+						"files": []map[string]any{
+							{"id": 0, "name": "Interstellar.2014.1080p.mkv", "size": 2147483648},
+						},
+					},
+				},
+			})
+		case "/webdl/mylist":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data":    []map[string]any{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer torboxServer.Close()
+
+	tbClient := &torbox.Client{
+		APIKey:  "test-key",
+		BaseURL: torboxServer.URL,
+		HTTP:    torboxServer.Client(),
+	}
+
+	store := &catalog.MemoryStore{}
+	state := catalog.State{Revision: 1, Rows: []catalog.Row{}}
+	h := Handler{
+		Manager:      catalog.Manager{Store: store},
+		FeedToken:    "test-token",
+		TorboxClient: tbClient,
+	}
+
+	for _, test := range []struct {
+		Path     string
+		Status   int
+		Contains string
+	}{
+		{"/stremio/test-token/manifest.json", 200, `"id":"torbox_uploads"`},
+		{"/stremio/test-token/manifest.json", 200, `"name":"TorBox Cloud"`},
+		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"id":"tb:torrent:101"`},
+		{"/stremio/test-token/catalog/other/torbox_uploads.json", 200, `"name":"Interstellar.2014.1080p.mkv"`},
+		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"videos"`},
+		{"/stremio/test-token/meta/other/tb:torrent:101.json", 200, `"tb:torrent:101:0"`},
+		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, `"streams"`},
+		{"/stremio/test-token/stream/other/tb:torrent:101:0.json", 200, `"requestdl?token=test-key&torrent_id=101&file_id=0&redirect=true"`},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", test.Path, nil))
+		if rec.Code != test.Status || !strings.Contains(rec.Body.String(), test.Contains) {
+			t.Errorf("%s got HTTP %d: %s", test.Path, rec.Code, rec.Body.String())
+		}
+	}
+}
+

@@ -26,6 +26,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			Manager:           defaultMgr,
 			ManagerForProfile: mgrForProfile,
 			FeedToken:         os.Getenv("STREMIO_FEED_TOKEN"),
+			TorboxAPIKey:      os.Getenv("TORBOX_API_KEY"),
 		}.ServeHTTP(w, r)
 		return
 	}

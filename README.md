@@ -8,11 +8,12 @@ This high-performance [Model Context Protocol](https://modelcontextprotocol.io/)
 
 ## Capabilities & Tool Surface
 
-The server exposes 13 purpose-built MCP tools across 6 operational domains:
+The server exposes 15 purpose-built MCP tools across 7 operational domains:
 
 ### 1. Catalog & Row Content
 * **`catalogs_get`**: Reads your custom catalog rows, ordered titles, and saved poster URLs. Supports multi-profile isolation.
 * **`catalogs_update`**: Batched mutations (create, edit, delete, reorder titles, or prune watched titles) with optimistic Redis compare-and-swap (CAS) concurrency protection.
+* **`torbox_catalog_sync`**: Automatically cleans release names, resolves matching IMDb titles via Cinemeta, and syncs completed TorBox cloud uploads into a Stremio custom catalog row.
 
 ### 2. Home Screen Layout
 * **`home_layout_get`**: Lists all installed addons and their catalog rows with Home screen visibility and order.
@@ -28,9 +29,11 @@ The server exposes 13 purpose-built MCP tools across 6 operational domains:
 * **`tmdb_discover`**: Discovers cinema by regional language (Tamil, Malayalam, Hindi, Telugu, Korean, etc.), streaming provider (Netflix, Prime, Hotstar), genre, year, and rating.
 * **`tmdb_similar`**: Finds similar and recommended movies/shows for any title or IMDb ID.
 
-### 6. Autonomous Crawling & TorBox Ingestion
+### 6. Autonomous Crawling & TorBox Cloud
+* **`torbox_uploads_get`**: Queries active and completed torrents and web downloads from your TorBox account, detailing size, status, progress, and file breakdown.
 * **`media_crawl_and_ingest`**: Autonomous media crawler. Accepts direct `magnet:?` links or crawls torrent forum topic URLs (e.g. 1TamilMV), verifies TorBox cache, enforces a 10 GB size safeguard, and automatically ingests the release to TorBox.
 * **`stream_unmask`**: Resolves masked embed players into direct video URLs with optional TorBox WebDL ingestion.
+* **Live "TorBox Cloud" Catalogue**: When `TORBOX_API_KEY` is configured, the addon automatically publishes a real-time `TorBox Cloud` catalog (`type: other`) with direct video streaming permalinks for all your uploads.
 
 ### 7. Addon & Household Device Management
 * **`addons_manage`**: Chat-driven addon management: list installed addons, install from manifest URL, or safely uninstall addons.

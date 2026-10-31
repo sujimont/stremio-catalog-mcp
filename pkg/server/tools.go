@@ -28,6 +28,7 @@ type Runtime struct {
 	BaseURL         string
 	FeedToken       string
 	TorboxAPIKey    string
+	TorboxBaseURL   string
 	TMDBAPIKey      string
 	TVWebhookURL    string
 }
@@ -43,7 +44,10 @@ func runtimeFromEnv() Runtime {
 		Token: store.Token,
 		Key:   catalog.RedisVisibilityKey(""),
 	}
-	account := stremio.AccountAPI{AuthKey: os.Getenv("STREMIO_AUTH_KEY")}
+	account := stremio.AccountAPI{
+		AuthKey:       os.Getenv("STREMIO_AUTH_KEY"),
+		TorboxEnabled: os.Getenv("TORBOX_API_KEY") != "",
+	}
 	account.BeforeReplace = func(ctx context.Context, addons []stremio.Descriptor) error {
 		raw, err := json.Marshal(addons)
 		if err != nil {
@@ -83,6 +87,7 @@ func (rt Runtime) forProfile(profile string) Runtime {
 		BaseURL:         rt.BaseURL,
 		FeedToken:       rt.FeedToken,
 		TorboxAPIKey:    rt.TorboxAPIKey,
+		TorboxBaseURL:   rt.TorboxBaseURL,
 		TMDBAPIKey:      rt.TMDBAPIKey,
 		TVWebhookURL:    rt.TVWebhookURL,
 	}
@@ -525,6 +530,20 @@ func serverFor(rt Runtime) *mcp.Server {
 			default:
 				return nil, DevicesManageResult{}, fmt.Errorf("unknown action %q (must be list, register, remove, or reset)", input.Action)
 			}
+		})
+
+	// Tool 14: torbox_uploads_get
+	mcp.AddTool(s, readOnlyTool("torbox_uploads_get", "List torrents and web downloads stored in your TorBox cloud account, including status, size, progress, and file breakdown."),
+		func(ctx context.Context, _ *mcp.CallToolRequest, input TorboxUploadsGetInput) (*mcp.CallToolResult, TorboxUploadsGetResult, error) {
+			result, err := rt.torboxUploadsGet(ctx, input)
+			return nil, result, err
+		})
+
+	// Tool 15: torbox_catalog_sync
+	mcp.AddTool(s, actionTool("torbox_catalog_sync", "Sync completed TorBox uploads into a Stremio custom catalog row, resolving titles with Cinemeta/IMDb.", false),
+		func(ctx context.Context, _ *mcp.CallToolRequest, input TorboxCatalogSyncInput) (*mcp.CallToolResult, TorboxCatalogSyncResult, error) {
+			result, err := rt.torboxCatalogSync(ctx, input)
+			return nil, result, err
 		})
 
 	return s
