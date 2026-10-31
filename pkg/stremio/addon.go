@@ -444,6 +444,23 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		if fileID < 0 {
+			if itemType == "torrent" {
+				if t, err := tb.GetTorrent(r.Context(), itemID); err == nil && t != nil {
+					fileID = torbox.BestVideoFileID(t.Files)
+				}
+			} else if itemType == "webdl" {
+				if uploads, err := tb.GetUploads(r.Context(), false); err == nil {
+					for _, u := range uploads {
+						if u.Type == "webdl" && u.ID == itemID {
+							fileID = torbox.BestVideoFileID(u.Files)
+							break
+						}
+					}
+				}
+			}
+		}
+
 		streamURL := tb.GetStreamURL(itemType, itemID, fileID)
 		if streamURL == "" {
 			http.Error(w, "Unable to generate TorBox stream link", http.StatusBadGateway)
