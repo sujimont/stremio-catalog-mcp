@@ -26,7 +26,7 @@ func TestCatalogAddOnProtocol(t *testing.T) {
 		Contains string
 	}{
 		{"/stremio/test-feed-token/manifest.json", 200, `"name":"Mysteries"`},
-		{"/stremio/test-feed-token/v3/manifest.json", 200, `"version":"0.1.3"`},
+		{"/stremio/test-feed-token/v3/manifest.json", 200, `"version":"0.2.3"`},
 		{"/stremio/test-feed-token/catalog/series/row_abc.json", 200, `"id":"tt0491738"`},
 		{"/stremio/test-feed-token/v3/catalog/series/row_abc.json", 200, `"name":"Psych"`},
 		{"/stremio/test-feed-token/catalog/movie/row_abc.json", 404, ""},

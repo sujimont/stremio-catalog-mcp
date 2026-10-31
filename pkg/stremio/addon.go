@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +35,7 @@ type Manifest struct {
 	Version     string    `json:"version"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	Resources   []string  `json:"resources"`
+	Resources   []any     `json:"resources"`
 	Types       []string  `json:"types"`
 	IDPrefixes  []string  `json:"idPrefixes,omitempty"`
 	Catalogs    []Catalog `json:"catalogs"`
@@ -70,15 +71,26 @@ func BuildManifest(state catalog.State, opts ...ManifestOption) Manifest {
 		opt(&cfg)
 	}
 
-	resources := []string{"catalog"}
+	resources := []any{"catalog"}
 	types := []string{"movie", "series"}
 	if cfg.HasTorbox {
-		resources = append(resources, "meta", "stream")
+		resources = append(resources,
+			map[string]any{
+				"name":       "meta",
+				"types":      []string{"movie", "series", "other"},
+				"idPrefixes": []string{"tb:"},
+			},
+			map[string]any{
+				"name":       "stream",
+				"types":      []string{"movie", "series", "other"},
+				"idPrefixes": []string{"tb:"},
+			},
+		)
 		types = append(types, "other")
 	}
 
 	manifest := Manifest{
-		ID: AddonID, Version: fmt.Sprintf("0.1.%d", state.Revision), Name: "Stremio Catalog MCP",
+		ID: AddonID, Version: fmt.Sprintf("0.2.%d", state.Revision), Name: "Stremio Catalog MCP",
 		Description: "Private catalog rows curated by your MCP agent with TorBox cloud integration. Streams and metadata stay with your existing addons.",
 		Resources:   resources, Types: types, Catalogs: []Catalog{},
 	}
@@ -190,8 +202,10 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := mgr.Read(r.Context())
 	if err != nil {
-		http.Error(w, "Catalog storage unavailable", http.StatusServiceUnavailable)
-		return
+		if resource != "stream" && resource != "meta" {
+			http.Error(w, "Catalog storage unavailable", http.StatusServiceUnavailable)
+			return
+		}
 	}
 
 	torboxKey := h.TorboxAPIKey
@@ -329,7 +343,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var (
-			name       string
+			rawName    string
 			size       int64
 			status     string
 			progress   float64
@@ -351,14 +365,15 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if foundItem != nil {
-			name = foundItem.Title
+			rawName = foundItem.Title
 			poster = foundItem.Poster
 		}
 
 		if itemType == "torrent" {
 			t, err := tb.GetTorrent(r.Context(), itemID)
 			if err == nil && t != nil {
-				name, size, status, progress, files = t.Name, t.Size, t.DownloadState, t.Progress, t.Files
+				rawName = t.Name
+				size, status, progress, files = t.Size, t.DownloadState, t.Progress, t.Files
 			} else if foundItem == nil {
 				http.NotFound(w, r)
 				return
@@ -368,30 +383,39 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				for _, u := range uploads {
 					if u.Type == "webdl" && u.ID == itemID {
-						name, size, status, progress, files = u.Name, u.Size, u.Status, u.Progress, u.Files
+						rawName = u.Name
+						size, status, progress, files = u.Size, u.Status, u.Progress, u.Files
 						break
 					}
 				}
 			}
-			if name == "" && foundItem == nil {
+			if rawName == "" && foundItem == nil {
 				http.NotFound(w, r)
 				return
 			}
 		}
 
-		if name == "" {
-			name = fmt.Sprintf("TorBox %s #%d", strings.ToUpper(itemType), itemID)
+		if rawName == "" {
+			rawName = fmt.Sprintf("TorBox %s #%d", strings.ToUpper(itemType), itemID)
 		}
 
-		cleanTitle, year := torbox.CleanUploadTitle(name)
-		if cleanTitle == "" {
-			cleanTitle = name
+		cleanTitle, year := torbox.CleanUploadTitle(rawName)
+		if foundItem != nil && foundItem.Title != "" {
+			cleanTitle = foundItem.Title
+		} else if cleanTitle == "" {
+			cleanTitle = rawName
+		}
+		if foundItem != nil && foundItem.Year > 0 {
+			year = foundItem.Year
+		}
+		if poster == "" && foundItem != nil {
+			poster = foundItem.Poster
 		}
 
 		defaultSeason := 1
-		if s, _, ok := torbox.ParseSeasonEpisode(name); ok && s > 0 {
+		if s, _, ok := torbox.ParseSeasonEpisode(rawName); ok && s > 0 {
 			defaultSeason = s
-		} else if s := torbox.ExtractSeason(name); s > 0 {
+		} else if s := torbox.ExtractSeason(rawName); s > 0 {
 			defaultSeason = s
 		}
 
@@ -418,12 +442,18 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						episode = ep
 					}
 
+					cleanFile := f.Name
+					if slashIdx := strings.LastIndex(cleanFile, "/"); slashIdx != -1 {
+						cleanFile = cleanFile[slashIdx+1:]
+					}
+
 					vEntry := map[string]any{
 						"id":       vID,
-						"title":    fmt.Sprintf("%s (%s)", f.Name, torbox.FormatBytes(f.Size)),
+						"title":    fmt.Sprintf("%s (%s)", cleanFile, torbox.FormatBytes(f.Size)),
+						"name":     cleanFile,
 						"season":   season,
 						"episode":  episode,
-						"released": time.Now().Format("2006-01-02"),
+						"released": time.Now().UTC().Format(time.RFC3339),
 					}
 					metaVideos = append(metaVideos, vEntry)
 				}
@@ -433,32 +463,23 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			metaVideos = append(metaVideos, map[string]any{
 				"id":       fmt.Sprintf("tb:%s:%d:0", itemType, itemID),
 				"title":    cleanTitle,
+				"name":     cleanTitle,
 				"season":   1,
 				"episode":  1,
-				"released": time.Now().Format("2006-01-02"),
+				"released": time.Now().UTC().Format(time.RFC3339),
 			})
 		}
 
-		// Ensure Season 1 has episodes so Stremio's default series tab (?season=1) displays them immediately!
-		hasSeason1 := false
-		for _, v := range metaVideos {
-			if s, ok := v["season"].(int); ok && s == 1 {
-				hasSeason1 = true
-				break
+		sort.Slice(metaVideos, func(i, j int) bool {
+			sI, _ := metaVideos[i]["season"].(int)
+			sJ, _ := metaVideos[j]["season"].(int)
+			if sI != sJ {
+				return sI < sJ
 			}
-		}
-		if !hasSeason1 && len(metaVideos) > 0 {
-			var s1Videos []map[string]any
-			for _, v := range metaVideos {
-				copyV := make(map[string]any, len(v))
-				for k, val := range v {
-					copyV[k] = val
-				}
-				copyV["season"] = 1
-				s1Videos = append(s1Videos, copyV)
-			}
-			metaVideos = append(s1Videos, metaVideos...)
-		}
+			epI, _ := metaVideos[i]["episode"].(int)
+			epJ, _ := metaVideos[j]["episode"].(int)
+			return epI < epJ
+		})
 
 		outType := mediaType
 		if outType == "" || outType == "other" {
@@ -473,15 +494,23 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"id":          id,
 			"type":        outType,
 			"name":        cleanTitle,
-			"description": fmt.Sprintf("TorBox Cloud Upload\nType: %s\nOriginal Name: %s\nSize: %s\nStatus: %s\nProgress: %.0f%%\nTotal Files: %d", strings.ToUpper(itemType), name, torbox.FormatBytes(size), status, progress*100, len(files)),
-			"releaseInfo": torbox.FormatBytes(size) + " • " + status,
+			"description": fmt.Sprintf("TorBox Cloud Upload\nType: %s\nOriginal Name: %s\nSize: %s\nStatus: %s\nProgress: %.0f%%\nTotal Files: %d", strings.ToUpper(itemType), rawName, torbox.FormatBytes(size), status, progress*100, len(files)),
 			"videos":      metaVideos,
 		}
 		if poster != "" {
 			metaDetail["poster"] = poster
 		}
 		if year > 0 {
-			metaDetail["releaseInfo"] = strconv.Itoa(year) + " • " + torbox.FormatBytes(size)
+			metaDetail["releaseInfo"] = strconv.Itoa(year)
+		} else {
+			metaDetail["releaseInfo"] = torbox.FormatBytes(size) + " • " + status
+		}
+		if len(metaVideos) > 0 {
+			if firstID, ok := metaVideos[0]["id"].(string); ok && firstID != "" {
+				metaDetail["behaviorHints"] = map[string]any{
+					"defaultVideoId": firstID,
+				}
+			}
 		}
 		response = map[string]any{"meta": metaDetail, "cacheMaxAge": 60}
 		w.Header().Set("Cache-Control", "private, max-age=60, must-revalidate")
@@ -508,7 +537,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		fileID := -1
 		if len(parts) >= 4 {
-			if fid, err := strconv.Atoi(parts[3]); err == nil {
+			lastPart := parts[len(parts)-1]
+			if fid, err := strconv.Atoi(lastPart); err == nil {
 				fileID = fid
 			}
 		}
