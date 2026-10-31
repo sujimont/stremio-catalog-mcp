@@ -180,6 +180,17 @@ func TestTorboxCatalogSyncTool(t *testing.T) {
 		t.Errorf("expected 0 matches for NonExistentTitleXYZ, got %d", unmatchedRes.MatchedCount)
 	}
 
+	// Verify targeted torrent_id works without query or row_name
+	targetedRes, err := rt.torboxCatalogSync(context.Background(), TorboxCatalogSyncInput{
+		TorrentID: 10,
+	})
+	if err != nil {
+		t.Fatalf("targeted torrent_id failed: %v", err)
+	}
+	if targetedRes.MatchedCount != 1 {
+		t.Errorf("expected 1 match for torrent_id 10, got %d", targetedRes.MatchedCount)
+	}
+
 	// Verify the row exists in catalogs
 	getRes, err := rt.catalogsGet(context.Background(), CatalogsGetInput{RowID: syncRes.RowID, IncludeTitles: true})
 	if err != nil {

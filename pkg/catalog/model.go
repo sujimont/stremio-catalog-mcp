@@ -49,9 +49,10 @@ type State struct {
 }
 
 type ItemInput struct {
-	ID    string `json:"id,omitempty" jsonschema:"IMDb ID (tt...), or omit to resolve by title"`
-	Title string `json:"title,omitempty" jsonschema:"Movie or series title, used for Cinemeta lookup"`
-	Year  int    `json:"year,omitempty" jsonschema:"Release year to disambiguate matching titles"`
+	ID     string `json:"id,omitempty" jsonschema:"IMDb ID (tt...) or TorBox ID (tb:...), or omit to resolve by title"`
+	Title  string `json:"title,omitempty" jsonschema:"Movie or series title, used for Cinemeta lookup"`
+	Year   int    `json:"year,omitempty" jsonschema:"Release year to disambiguate matching titles"`
+	Poster string `json:"poster,omitempty" jsonschema:"Optional poster image URL for the title"`
 }
 
 type UpsertInput struct {

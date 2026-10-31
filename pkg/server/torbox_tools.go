@@ -73,12 +73,16 @@ func (rt Runtime) torboxUploadsGet(ctx context.Context, input TorboxUploadsGetIn
 
 type TorboxCatalogSyncInput struct {
 	Profile    string `json:"profile,omitempty" jsonschema:"Profile name (e.g. kids, Suji, default)"`
-	RowName    string `json:"row_name,omitempty" jsonschema:"Display name for the catalog row (default 'TorBox Cloud')"`
-	RowType    string `json:"row_type,omitempty" jsonschema:"movie or series (default movie)"`
-	Query      string `json:"query,omitempty" jsonschema:"Optional search filter (e.g. 'Severance', 'Inception') to sync only matching TorBox uploads"`
+	RowName    string `json:"row_name,omitempty" jsonschema:"Display name for the catalog row (e.g. 'Sattamum Needhiyum' or 'TorBox Series')"`
+	RowType    string `json:"row_type,omitempty" jsonschema:"movie or series (default movie; auto-detected if omitted and SxxExx is present)"`
+	TorrentID  int    `json:"torrent_id,omitempty" jsonschema:"Target specific TorBox torrent ID (e.g. 129239556) to add directly without processing unrelated uploads"`
+	UploadID   int    `json:"upload_id,omitempty" jsonschema:"Target specific TorBox upload ID to add directly"`
+	Query      string `json:"query,omitempty" jsonschema:"Search filter by title or keyword (e.g. 'Sattamum Needhiyum') to sync only matching TorBox uploads"`
+	Title      string `json:"title,omitempty" jsonschema:"Custom clean title to use for the entry (e.g. 'Sattamum Needhiyum - Season 2')"`
+	Poster     string `json:"poster,omitempty" jsonschema:"Optional poster image URL for the title"`
 	UploadIDs  []int  `json:"upload_ids,omitempty" jsonschema:"Optional list of specific TorBox upload/torrent IDs to add"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"Max completed uploads to resolve and sync (1-50, default 20)"`
-	Mode       string `json:"mode,omitempty" jsonschema:"replace or append (defaults to append when query or upload_ids is given, otherwise replace)"`
+	Mode       string `json:"mode,omitempty" jsonschema:"replace or append (defaults to append when torrent_id, query or upload_ids is given, otherwise replace)"`
 	DirectOnly *bool  `json:"direct_only,omitempty" jsonschema:"If true (default), catalog items use TorBox IDs so Stremio shows ONLY your TorBox stream and no other addons. If false, resolves to IMDb IDs."`
 }
 
@@ -104,6 +108,11 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 		rt = rt.forProfile(input.Profile)
 	}
 
+	targetID := input.TorrentID
+	if targetID == 0 {
+		targetID = input.UploadID
+	}
+
 	rowType := input.RowType
 	if rowType == "" {
 		rowType = "movie"
@@ -119,7 +128,7 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 
 	mode := input.Mode
 	if mode == "" {
-		if input.Query != "" || len(input.UploadIDs) > 0 {
+		if targetID > 0 || input.Query != "" || len(input.UploadIDs) > 0 {
 			mode = "append"
 		} else {
 			mode = "replace"
@@ -160,6 +169,10 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			continue
 		}
 
+		if targetID > 0 && u.ID != targetID {
+			continue
+		}
+
 		if len(input.UploadIDs) > 0 {
 			matched := false
 			for _, id := range input.UploadIDs {
@@ -174,7 +187,9 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 		}
 
 		cleanTitle, year := torbox.CleanUploadTitle(u.Name)
-		if cleanTitle == "" {
+		if input.Title != "" {
+			cleanTitle = input.Title
+		} else if cleanTitle == "" {
 			cleanTitle = u.Name
 		}
 
@@ -185,6 +200,16 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			}
 		}
 
+		if input.RowType == "" {
+			if _, _, isSE := torbox.ParseSeasonEpisode(u.Name); isSE {
+				rowType = "series"
+			}
+		}
+
+		if rowName == "TorBox Cloud" && (targetID > 0 || input.Query != "") && input.RowName == "" {
+			rowName = cleanTitle
+		}
+
 		if directOnly {
 			tbID := u.StremioID()
 			if seen[tbID] {
@@ -192,9 +217,10 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			}
 			seen[tbID] = true
 			itemsToSync = append(itemsToSync, catalog.ItemInput{
-				ID:    tbID,
-				Title: cleanTitle,
-				Year:  year,
+				ID:     tbID,
+				Title:  cleanTitle,
+				Year:   year,
+				Poster: input.Poster,
 			})
 		} else {
 			// Try resolving against Cinemeta
@@ -208,9 +234,10 @@ func (rt Runtime) torboxCatalogSync(ctx context.Context, input TorboxCatalogSync
 			}
 			seen[resolved.ID] = true
 			itemsToSync = append(itemsToSync, catalog.ItemInput{
-				ID:    resolved.ID,
-				Title: resolved.Title,
-				Year:  resolved.Year,
+				ID:     resolved.ID,
+				Title:  resolved.Title,
+				Year:   resolved.Year,
+				Poster: resolved.Poster,
 			})
 		}
 	}

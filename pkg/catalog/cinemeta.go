@@ -65,26 +65,34 @@ func (c Cinemeta) Resolve(ctx context.Context, mediaType string, input ItemInput
 	var m meta
 	if input.ID != "" {
 		if ValidTorboxID(input.ID) {
+			poster := input.Poster
+			title := input.Title
+			year := input.Year
 			if input.Title != "" {
 				var resp struct {
 					Metas []meta `json:"metas"`
 				}
 				route := "/catalog/" + mediaType + "/top/search=" + url.PathEscape(input.Title) + ".json"
 				if err := c.fetch(ctx, route, &resp); err == nil && len(resp.Metas) > 0 {
+					targetNorm := normalizeTitle(input.Title)
 					for _, candidate := range resp.Metas {
 						if candidate.Type == mediaType {
-							return Item{
-								ID:     input.ID,
-								Type:   mediaType,
-								Title:  candidate.Name,
-								Year:   yearFromRelease(candidate.ReleaseInfo),
-								Poster: candidate.Poster,
-							}, nil
+							candNorm := normalizeTitle(candidate.Name)
+							if candNorm == targetNorm || strings.HasPrefix(candNorm, targetNorm) || strings.HasPrefix(targetNorm, candNorm) {
+								title = candidate.Name
+								if year == 0 {
+									year = yearFromRelease(candidate.ReleaseInfo)
+								}
+								if poster == "" {
+									poster = candidate.Poster
+								}
+								break
+							}
 						}
 					}
 				}
 			}
-			return Item{ID: input.ID, Type: mediaType, Title: input.Title, Year: input.Year}, nil
+			return Item{ID: input.ID, Type: mediaType, Title: title, Year: year, Poster: poster}, nil
 		}
 		if !ValidIMDbID(input.ID) {
 			return Item{}, fmt.Errorf("%q is not an IMDb ID (tt...) or TorBox ID (tb:...)", input.ID)

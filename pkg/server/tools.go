@@ -540,7 +540,7 @@ func serverFor(rt Runtime) *mcp.Server {
 		})
 
 	// Tool 15: torbox_catalog_sync
-	mcp.AddTool(s, actionTool("torbox_catalog_sync", "Sync completed TorBox uploads into a Stremio custom catalog row, resolving titles with Cinemeta/IMDb.", false),
+	mcp.AddTool(s, actionTool("torbox_catalog_sync", "Add or sync TorBox uploads into a Stremio catalog row. Supports targeted adding by torrent_id (e.g. 129239556), query title, or upload_id without processing unrelated uploads.", false),
 		func(ctx context.Context, _ *mcp.CallToolRequest, input TorboxCatalogSyncInput) (*mcp.CallToolResult, TorboxCatalogSyncResult, error) {
 			result, err := rt.torboxCatalogSync(ctx, input)
 			return nil, result, err
