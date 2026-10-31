@@ -353,48 +353,47 @@ func (c *Client) GetTorrent(ctx context.Context, id int) (*TorrentItem, error) {
 		return nil, fmt.Errorf("TORBOX_API_KEY is not configured")
 	}
 
-	endpoint := fmt.Sprintf("%s/torrents/mylist?id=%d", c.BaseURL, id)
+	endpoint := fmt.Sprintf("%s/torrents/mylist?id=%d&bypass_cache=true", c.BaseURL, id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("TorBox mylist returned HTTP %d", resp.StatusCode)
-	}
-
-	var res TorboxListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, fmt.Errorf("failed to decode TorBox response: %w", err)
-	}
-
-	trimmed := bytes.TrimSpace(res.Data)
-	if len(trimmed) == 0 || string(trimmed) == "null" {
-		return nil, fmt.Errorf("torrent %d not found", id)
-	}
-
-	if bytes.HasPrefix(trimmed, []byte("{")) {
-		var single TorrentItem
-		if err := json.Unmarshal(trimmed, &single); err != nil {
-			return nil, err
-		}
-		return &single, nil
-	} else if bytes.HasPrefix(trimmed, []byte("[")) {
-		var list []TorrentItem
-		if err := json.Unmarshal(trimmed, &list); err != nil {
-			return nil, err
-		}
-		if len(list) > 0 {
-			return &list[0], nil
+	if err == nil {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		resp, err := c.HTTP.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			defer resp.Body.Close()
+			var res TorboxListResponse
+			if err := json.NewDecoder(resp.Body).Decode(&res); err == nil {
+				trimmed := bytes.TrimSpace(res.Data)
+				if bytes.HasPrefix(trimmed, []byte("{")) {
+					var single TorrentItem
+					if err := json.Unmarshal(trimmed, &single); err == nil && single.ID != 0 {
+						return &single, nil
+					}
+				} else if bytes.HasPrefix(trimmed, []byte("[")) {
+					var list []TorrentItem
+					if err := json.Unmarshal(trimmed, &list); err == nil {
+						for i := range list {
+							if list[i].ID == id {
+								return &list[i], nil
+							}
+						}
+					}
+				}
+			}
+		} else if resp != nil {
+			resp.Body.Close()
 		}
 	}
+
+	// Resilient fallback: fetch all user torrents and match by ID
+	list, err := c.GetTorrents(ctx, true)
+	if err == nil {
+		for i := range list {
+			if list[i].ID == id {
+				return &list[i], nil
+			}
+		}
+	}
+
 	return nil, fmt.Errorf("torrent %d not found", id)
 }
 
@@ -603,6 +602,8 @@ var (
 	UploadYearRegex    = regexp.MustCompile(`\b(19\d\d|20\d\d)\b`)
 	UploadTagsRegex    = regexp.MustCompile(`(?i)\b(s\d+(?:e\d+)?|2160p|1080p|720p|480p|4k|uhd|hdr|hdr10|dv|bluray|blu-ray|bdrip|brrip|web-dl|webrip|web|hdtv|dvdrip|remux|x264|x265|hevc|h264|h265|avc|aac|ac3|dts|atmos|ddp5\.1|dd5\.1|sub|dub|multi|tamil|telugu|hindi|malayalam|kannada|english|proper|repack)\b.*$`)
 	SeasonEpisodeRegex = regexp.MustCompile(`(?i)\b(?:s|season\s*)(\d+)\s*(?:e|ep|episode\s*)(\d+)\b`)
+	SeasonRegex        = regexp.MustCompile(`(?i)\b(?:s|season\s*)(\d+)\b`)
+	EpisodeRegex       = regexp.MustCompile(`(?i)\b(?:e|ep|episode\s*)(\d+)\b`)
 	UploadDelimRegex   = regexp.MustCompile(`[._]`)
 	UploadCleanRegex   = regexp.MustCompile(`[\[\]\(\)\{\}]`)
 	UploadSpacesRegex  = regexp.MustCompile(`\s+`)
@@ -645,4 +646,26 @@ func ParseSeasonEpisode(raw string) (int, int, bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+// ExtractSeason parses a standalone season number (e.g. S02, Season 2).
+func ExtractSeason(raw string) int {
+	match := SeasonRegex.FindStringSubmatch(raw)
+	if len(match) == 2 {
+		if s, err := strconv.Atoi(match[1]); err == nil {
+			return s
+		}
+	}
+	return 0
+}
+
+// ExtractEpisode parses a standalone episode number (e.g. EP01, Episode 1).
+func ExtractEpisode(raw string) int {
+	match := EpisodeRegex.FindStringSubmatch(raw)
+	if len(match) == 2 {
+		if ep, err := strconv.Atoi(match[1]); err == nil {
+			return ep
+		}
+	}
+	return 0
 }
