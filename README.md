@@ -8,11 +8,12 @@ This high-performance [Model Context Protocol](https://modelcontextprotocol.io/)
 
 ## Capabilities & Tool Surface
 
-The server exposes 15 purpose-built MCP tools across 7 operational domains:
+The server exposes 16 purpose-built MCP tools across 7 operational domains:
 
 ### 1. Catalog & Row Content
 * **`catalogs_get`**: Reads your custom catalog rows, ordered titles, and saved poster URLs. Supports multi-profile isolation.
 * **`catalogs_update`**: Batched mutations (create, edit, delete, reorder titles, or prune watched titles) with optimistic Redis compare-and-swap (CAS) concurrency protection.
+* **`catalogs_sync`**: Scrapes fresh releases from MovieRulz, Einthusan, MediaFusion, and Bharat Binge, deduplicates them, updates the 6 Indian movie and series catalogs, and immediately syncs to your Stremio Home screen.
 * **`torbox_catalog_sync`**: Automatically cleans release names, resolves matching IMDb titles via Cinemeta, and syncs completed TorBox cloud uploads into a Stremio custom catalog row.
 
 ### 2. Home Screen Layout
