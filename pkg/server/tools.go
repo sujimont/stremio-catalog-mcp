@@ -14,6 +14,7 @@ import (
 	"github.com/amxv/stremio-catalog-mcp/pkg/device"
 	"github.com/amxv/stremio-catalog-mcp/pkg/streams"
 	"github.com/amxv/stremio-catalog-mcp/pkg/stremio"
+	"github.com/amxv/stremio-catalog-mcp/pkg/syncer"
 	"github.com/amxv/stremio-catalog-mcp/pkg/tmdb"
 	"github.com/amxv/stremio-catalog-mcp/pkg/torbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -258,6 +259,13 @@ type DevicesManageResult struct {
 	Devices []device.DeviceConfig `json:"devices,omitempty"`
 	Count   int                   `json:"count,omitempty"`
 	Message string                `json:"message"`
+}
+
+type CatalogsSyncIndianInput struct{}
+
+type CatalogsSyncIndianResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
 }
 
 func serverFor(rt Runtime) *mcp.Server {
@@ -544,6 +552,15 @@ func serverFor(rt Runtime) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, input TorboxCatalogSyncInput) (*mcp.CallToolResult, TorboxCatalogSyncResult, error) {
 			result, err := rt.torboxCatalogSync(ctx, input)
 			return nil, result, err
+		})
+
+	// Tool 16: catalogs_sync_indian
+	mcp.AddTool(s, actionTool("catalogs_sync_indian", "Scrapes fresh Tamil, Malayalam, and Hindi movies and TV series from MovieRulz, Einthusan, MediaFusion, and Bharat Binge, deduplicates them, updates the 6 custom catalog rows, and syncs immediately to your Stremio Home screen.", false),
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ CatalogsSyncIndianInput) (*mcp.CallToolResult, CatalogsSyncIndianResult, error) {
+			if err := syncer.SyncAll(ctx, rt.Store, rt.Account, rt.BaseURL, rt.FeedToken); err != nil {
+				return nil, CatalogsSyncIndianResult{Success: false, Message: err.Error()}, err
+			}
+			return nil, CatalogsSyncIndianResult{Success: true, Message: "Successfully scraped, deduplicated, and synced all 6 Indian movie and series catalogs to Stremio."}, nil
 		})
 
 	return s
