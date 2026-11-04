@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/amxv/stremio-catalog-mcp/pkg/catalog"
@@ -74,6 +75,9 @@ func normalize(s string) string {
 }
 
 func searchCinemeta(ctx context.Context, client *http.Client, mediaType, title string) (string, string) {
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+
 	query := url.PathEscape(title)
 	u := fmt.Sprintf("https://v3-cinemeta.strem.io/catalog/%s/top/search=%s.json", mediaType, query)
 	metas, err := fetchMetas(ctx, client, u)
@@ -90,10 +94,7 @@ func searchCinemeta(ctx context.Context, client *http.Client, mediaType, title s
 	return "", ""
 }
 
-func buildMovieUnion(ctx context.Context, client *http.Client, mrulzCat, einthusanCat string, maxItems int) []catalog.Item {
-	mrulzMetas, _ := fetchMetas(ctx, client, fmt.Sprintf("%s/catalog/movie/%s.json", MovieRulzBase, mrulzCat))
-	einthusanMetas, _ := fetchMetas(ctx, client, fmt.Sprintf("%s/catalog/movie/%s.json", EinthusanBase, einthusanCat))
-
+func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einthusanMetas []stremioMeta, maxItems int) []catalog.Item {
 	eMap := make(map[string]stremioMeta, len(einthusanMetas))
 	for _, m := range einthusanMetas {
 		eMap[normalize(m.Name)] = m
@@ -178,10 +179,7 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzCat, einthus
 	return items
 }
 
-func buildSeriesUnion(ctx context.Context, client *http.Client, mfCat, bbCat string, maxItems int) []catalog.Item {
-	mfMetas, _ := fetchMetas(ctx, client, fmt.Sprintf("%s/catalog/series/%s.json", MediaFusionBase, mfCat))
-	bbMetas, _ := fetchMetas(ctx, client, fmt.Sprintf("%s/catalog/series/%s.json", BharatBingeBase, bbCat))
-
+func buildSeriesUnion(mfMetas, bbMetas []stremioMeta, maxItems int) []catalog.Item {
 	items := make([]catalog.Item, 0, maxItems)
 	seenIDs := make(map[string]bool)
 	seenNorms := make(map[string]bool)
@@ -198,16 +196,6 @@ func buildSeriesUnion(ctx context.Context, client *http.Client, mfCat, bbCat str
 			norm := normalize(b.Name)
 			imdbID := b.ID
 			poster := b.Poster
-
-			if !strings.HasPrefix(imdbID, "tt") {
-				id, cPoster := searchCinemeta(ctx, client, "series", b.Name)
-				if strings.HasPrefix(id, "tt") {
-					imdbID = id
-					if poster == "" {
-						poster = cPoster
-					}
-				}
-			}
 
 			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
 				seenIDs[imdbID] = true
@@ -231,16 +219,6 @@ func buildSeriesUnion(ctx context.Context, client *http.Client, mfCat, bbCat str
 			imdbID := m.ID
 			poster := m.Poster
 
-			if !strings.HasPrefix(imdbID, "tt") {
-				id, cPoster := searchCinemeta(ctx, client, "series", m.Name)
-				if strings.HasPrefix(id, "tt") {
-					imdbID = id
-					if poster == "" {
-						poster = cPoster
-					}
-				}
-			}
-
 			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
 				seenIDs[imdbID] = true
 				seenNorms[norm] = true
@@ -262,17 +240,52 @@ func buildSeriesUnion(ctx context.Context, client *http.Client, mfCat, bbCat str
 
 // SyncAll refreshes all 6 Indian catalog rows and syncs with Stremio.
 func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAPI, baseURL, feedToken string) error {
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 6 * time.Second}
 
-	// Build movie rows
-	tamilMovies := buildMovieUnion(ctx, client, "mrulz_tamil", "tamil_board", 100)
-	malayalamMovies := buildMovieUnion(ctx, client, "mrulz_malayalam", "malayalam_board", 100)
-	hindiMovies := buildMovieUnion(ctx, client, "mrulz_hindi", "hindi_board", 100)
+	var (
+		mrulzTa, mrulzMl, mrulzHi []stremioMeta
+		einTa, einMl, einHi       []stremioMeta
+		mfTa, mfMl, mfHi          []stremioMeta
+		bbTa, bbMl, bbHi          []stremioMeta
+		wg                        sync.WaitGroup
+	)
 
-	// Build series rows
-	tamilSeries := buildSeriesUnion(ctx, client, "tamil_series", "tmdb-ta-recent-series", 100)
-	malayalamSeries := buildSeriesUnion(ctx, client, "malayalam_series", "tmdb-ml-recent-series", 100)
-	hindiSeries := buildSeriesUnion(ctx, client, "hindi_series", "tmdb-hi-recent-series", 100)
+	fetchParallel := func(target *[]stremioMeta, targetURL string) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			metas, _ := fetchMetas(ctx, client, targetURL)
+			*target = metas
+		}()
+	}
+
+	fetchParallel(&mrulzTa, fmt.Sprintf("%s/catalog/movie/mrulz_tamil.json", MovieRulzBase))
+	fetchParallel(&mrulzMl, fmt.Sprintf("%s/catalog/movie/mrulz_malayalam.json", MovieRulzBase))
+	fetchParallel(&mrulzHi, fmt.Sprintf("%s/catalog/movie/mrulz_hindi.json", MovieRulzBase))
+
+	fetchParallel(&einTa, fmt.Sprintf("%s/catalog/movie/tamil_board.json", EinthusanBase))
+	fetchParallel(&einMl, fmt.Sprintf("%s/catalog/movie/malayalam_board.json", EinthusanBase))
+	fetchParallel(&einHi, fmt.Sprintf("%s/catalog/movie/hindi_board.json", EinthusanBase))
+
+	fetchParallel(&mfTa, fmt.Sprintf("%s/catalog/series/tamil_series.json", MediaFusionBase))
+	fetchParallel(&mfMl, fmt.Sprintf("%s/catalog/series/malayalam_series.json", MediaFusionBase))
+	fetchParallel(&mfHi, fmt.Sprintf("%s/catalog/series/hindi_series.json", MediaFusionBase))
+
+	fetchParallel(&bbTa, fmt.Sprintf("%s/catalog/series/tmdb-ta-recent-series.json", BharatBingeBase))
+	fetchParallel(&bbMl, fmt.Sprintf("%s/catalog/series/tmdb-ml-recent-series.json", BharatBingeBase))
+	fetchParallel(&bbHi, fmt.Sprintf("%s/catalog/series/tmdb-hi-recent-series.json", BharatBingeBase))
+
+	wg.Wait()
+
+	// Build movie rows with interleaving
+	tamilMovies := buildMovieUnion(ctx, client, mrulzTa, einTa, 100)
+	malayalamMovies := buildMovieUnion(ctx, client, mrulzMl, einMl, 100)
+	hindiMovies := buildMovieUnion(ctx, client, mrulzHi, einHi, 100)
+
+	// Build series rows with interleaving
+	tamilSeries := buildSeriesUnion(mfTa, bbTa, 100)
+	malayalamSeries := buildSeriesUnion(mfMl, bbMl, 100)
+	hindiSeries := buildSeriesUnion(mfHi, bbHi, 100)
 
 	raw, err := store.Load(ctx)
 	if err != nil {
