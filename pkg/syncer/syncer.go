@@ -24,14 +24,65 @@ const (
 )
 
 var (
-	ratingPrefixRegex = regexp.MustCompile(`^★\s*[\d\.]+\s*\|\s*`)
-	yearRegex         = regexp.MustCompile(`^(.*?)\s*\((\d{4})\)`)
-	alphaNumRegex     = regexp.MustCompile(`[^a-z0-9]`)
-	dubbedRegex       = regexp.MustCompile(`(?i)\b(dubbed|dual\s*audio|multi\s*audio|hollywood)\b`)
+	ratingPrefixRegex  = regexp.MustCompile(`^★\s*[\d\.]+\s*\|\s*`)
+	yearRegex          = regexp.MustCompile(`^(.*?)\s*\((\d{4})\)`)
+	alphaNumRegex      = regexp.MustCompile(`[^a-z0-9]`)
+	foreignDubRegex    = regexp.MustCompile(`(?i)\b(hollywood|english\s*dubbed|foreign)\b`)
+	exactForeignRegex  = regexp.MustCompile(`(?i)^(cross|elle|dark|days|youth|doctors|resort)(\s*\(.*\))?$`)
+	foreignFranchises  = []string{
+		// Anime & Animation
+		"spongebob", "naruto", "jujutsu kaisen", "one piece", "blue box", "shin-chan",
+		"crayon shin-chan", "one punch man", "solo leveling", "bleach", "attack on titan",
+		"demon slayer", "dragon ball", "death note", "chainsaw man", "avatar", "we bare bears",
+		"he-man", "thunder 3", "to be hero", "arcane",
+		// Marvel / DC / Superhero
+		"spider-noir", "spider noir", "spider-man", "spiderman", "batman", "superman", "ironheart",
+		"moon knight", "she-hulk", "hawkeye", "the flash", "loki", "ms marvel", "ms. marvel",
+		"deadpool", "dc's legends", "legends of tomorrow", "peacemaker", "the boys", "invincible",
+		// Star Wars & Sci-Fi / Fantasy
+		"star wars", "mandalorian", "boba fett", "obi-wan", "lord of the rings", "rings of power",
+		"fallout", "dune: prophecy", "halo", "resident evil", "transformers", "locke and key",
+		"lost in space", "la brea", "the witcher", "house of the dragon", "game of thrones", "stranger things",
+		// Western drama / thriller / crime / reality
+		"lupin", "the gentlemen", "the terminal list", "mr. & mrs. smith", "hunting party",
+		"good casting", "taken: natalee holloway", "has fallen", "clean up company",
+		"mystery of edwin drood", "man who fell to earth", "every year after",
+		"severance", "the penguin", "shogun", "ted lasso", "succession", "the last of us",
+		"money heist", "reacher", "dexter", "prison break", "breaking bad",
+		"better call saul", "sherlock", "black mirror", "wednesday", "umbrella academy",
+		"agatha christie", "beast games", "beauty in black", "citadel: diana", "family matters",
+		"heels", "high school", "it welcome to derry", "jazz city", "lucifer", "man vs baby",
+		"missing you", "only murders in the building", "outlast", "part-timers", "real kashmir football club",
+		"rise and fall", "second love", "secret stories: roslin", "single's inferno", "suits: l.a.",
+		"surely tomorrow", "the asset", "the endgame", "the game: you never play alone",
+		"the ordinary jackpot", "the summer i turned pretty", "the traitors", "the watch",
+		"two graves", "van der valk", "we were liars", "scrubs", "little house on the prairie",
+		"visionquest", "falcon and the winter soldier", "winter soldier",
+		// Asian (K-Drama / C-Drama) dubbed
+		"when life gives you tangerines", "my lovely liar", "reincarnated aristocrat",
+		"squid game", "all of us are dead", "alice in borderland", "parasyte", "hellbound",
+		"sweet home", "vincenzo", "crash landing", "queen of tears", "dr. romantic",
+		"descendants of the sun", "goblin", "itaewon class", "the glory",
+		"death's game", "daily dose of sunshine", "twinkling watermelon",
+		"bloodhounds", "see you in my 19th life",
+	}
 )
 
-func isForeignDub(s string) bool {
-	return dubbedRegex.MatchString(s)
+func isForeign(name string) bool {
+	if foreignDubRegex.MatchString(name) {
+		return true
+	}
+	trimmed := strings.TrimSpace(name)
+	if exactForeignRegex.MatchString(trimmed) {
+		return true
+	}
+	low := strings.ToLower(trimmed)
+	for _, f := range foreignFranchises {
+		if strings.Contains(low, f) {
+			return true
+		}
+	}
+	return false
 }
 
 type stremioMeta struct {
@@ -119,11 +170,11 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 		if i < len(mrulzMetas) && len(items) < maxItems {
 			m := mrulzMetas[i]
 			rawName := m.Name
-			if isForeignDub(rawName) {
+			if isForeign(rawName) {
 				continue
 			}
 			title, year := cleanTitle(rawName)
-			if isForeignDub(title) {
+			if isForeign(title) {
 				continue
 			}
 			norm := normalize(title)
@@ -167,7 +218,7 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 		// 2. Einthusan item at index i
 		if i < len(einthusanMetas) && len(items) < maxItems {
 			e := einthusanMetas[i]
-			if strings.HasPrefix(e.ID, "tt") {
+			if strings.HasPrefix(e.ID, "tt") && !isForeign(e.Name) {
 				norm := normalize(e.Name)
 				if !seenIDs[e.ID] && !seenNorms[norm] {
 					seenIDs[e.ID] = true
@@ -190,65 +241,56 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 	return items
 }
 
-func buildSeriesUnion(recentMetas, topRatedMetas []stremioMeta, maxItems int) []catalog.Item {
+func buildSeriesUnion(recentMetas, mfMetas, topRatedMetas []stremioMeta, maxItems int) []catalog.Item {
 	items := make([]catalog.Item, 0, maxItems)
 	seenIDs := make(map[string]bool)
 	seenNorms := make(map[string]bool)
 
+	addSeries := func(m stremioMeta) {
+		if !strings.HasPrefix(m.ID, "tt") {
+			return
+		}
+		if isForeign(m.Name) {
+			return
+		}
+		norm := normalize(m.Name)
+		if seenIDs[m.ID] || seenNorms[norm] {
+			return
+		}
+		seenIDs[m.ID] = true
+		seenNorms[norm] = true
+		poster := m.Poster
+		if poster == "" {
+			poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", m.ID)
+		}
+		items = append(items, catalog.Item{
+			ID:     m.ID,
+			Type:   "series",
+			Title:  m.Name,
+			Poster: poster,
+		})
+	}
+
 	maxLen := len(recentMetas)
+	if len(mfMetas) > maxLen {
+		maxLen = len(mfMetas)
+	}
 	if len(topRatedMetas) > maxLen {
 		maxLen = len(topRatedMetas)
 	}
 
 	for i := 0; i < maxLen && len(items) < maxItems; i++ {
-		// 1. New releases from Bharat Binge (recent regional serials)
+		// 1. Bharat Binge Recent releases
 		if i < len(recentMetas) && len(items) < maxItems {
-			b := recentMetas[i]
-			if isForeignDub(b.Name) {
-				continue
-			}
-			norm := normalize(b.Name)
-			imdbID := b.ID
-			poster := b.Poster
-
-			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
-				seenIDs[imdbID] = true
-				seenNorms[norm] = true
-				if poster == "" {
-					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
-				}
-				items = append(items, catalog.Item{
-					ID:     imdbID,
-					Type:   "series",
-					Title:  b.Name,
-					Poster: poster,
-				})
-			}
+			addSeries(recentMetas[i])
 		}
-
-		// 2. Top-rated regional Indian serials & shows from Bharat Binge
+		// 2. MediaFusion Indian regional & multi-audio releases
+		if i < len(mfMetas) && len(items) < maxItems {
+			addSeries(mfMetas[i])
+		}
+		// 3. Bharat Binge Top Rated serials
 		if i < len(topRatedMetas) && len(items) < maxItems {
-			t := topRatedMetas[i]
-			if isForeignDub(t.Name) {
-				continue
-			}
-			norm := normalize(t.Name)
-			imdbID := t.ID
-			poster := t.Poster
-
-			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
-				seenIDs[imdbID] = true
-				seenNorms[norm] = true
-				if poster == "" {
-					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
-				}
-				items = append(items, catalog.Item{
-					ID:     imdbID,
-					Type:   "series",
-					Title:  t.Name,
-					Poster: poster,
-				})
-			}
+			addSeries(topRatedMetas[i])
 		}
 	}
 
@@ -265,6 +307,7 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 		bbTaRecent, bbTaTop       []stremioMeta
 		bbMlRecent, bbMlTop       []stremioMeta
 		bbHiRecent, bbHiTop       []stremioMeta
+		mfTa, mfMl, mfHi          []stremioMeta
 		wg                        sync.WaitGroup
 	)
 
@@ -294,6 +337,10 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 	fetchParallel(&bbHiRecent, fmt.Sprintf("%s/catalog/series/tmdb-hi-recent-series.json", BharatBingeBase))
 	fetchParallel(&bbHiTop, fmt.Sprintf("%s/catalog/series/tmdb-hi-top_rated-series.json", BharatBingeBase))
 
+	fetchParallel(&mfTa, fmt.Sprintf("%s/catalog/series/tamil_series.json", MediaFusionBase))
+	fetchParallel(&mfMl, fmt.Sprintf("%s/catalog/series/malayalam_series.json", MediaFusionBase))
+	fetchParallel(&mfHi, fmt.Sprintf("%s/catalog/series/hindi_series.json", MediaFusionBase))
+
 	wg.Wait()
 
 	// Build movie rows with interleaving
@@ -301,10 +348,10 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 	malayalamMovies := buildMovieUnion(ctx, client, mrulzMl, einMl, 100)
 	hindiMovies := buildMovieUnion(ctx, client, mrulzHi, einHi, 100)
 
-	// Build series rows with interleaving (pure Indian recent + top-rated serials)
-	tamilSeries := buildSeriesUnion(bbTaRecent, bbTaTop, 100)
-	malayalamSeries := buildSeriesUnion(bbMlRecent, bbMlTop, 100)
-	hindiSeries := buildSeriesUnion(bbHiRecent, bbHiTop, 100)
+	// Build series rows with interleaving (Bharat Binge recent + MediaFusion multi-audio/Indian + Bharat Binge top-rated)
+	tamilSeries := buildSeriesUnion(bbTaRecent, mfTa, bbTaTop, 100)
+	malayalamSeries := buildSeriesUnion(bbMlRecent, mfMl, bbMlTop, 100)
+	hindiSeries := buildSeriesUnion(bbHiRecent, mfHi, bbHiTop, 100)
 
 	raw, err := store.Load(ctx)
 	if err != nil {
