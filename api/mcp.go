@@ -30,7 +30,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		if cronSecret != "" && supplied == cronSecret {
 			authOK = true
 		}
-		if !authOK && r.Header.Get("x-vercel-cron") == "1" {
+		if !authOK && (strings.HasPrefix(r.Header.Get("User-Agent"), "vercel-cron/") ||
+			r.Header.Get("x-vercel-cron") == "1" ||
+			r.Header.Get("x-vercel-cron-schedule") != "") {
 			authOK = true
 		}
 		if !authOK {

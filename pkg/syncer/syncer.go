@@ -87,7 +87,7 @@ func searchCinemeta(ctx context.Context, client *http.Client, mediaType, title s
 			return m.ID, m.Poster
 		}
 	}
-	return metas[0].ID, metas[0].Poster
+	return "", ""
 }
 
 func buildMovieUnion(ctx context.Context, client *http.Client, mrulzCat, einthusanCat string, maxItems int) []catalog.Item {
@@ -103,75 +103,76 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzCat, einthus
 	seenIDs := make(map[string]bool)
 	seenNorms := make(map[string]bool)
 
-	// 1. MovieRulz first
-	for _, m := range mrulzMetas {
-		rawName := m.Name
-		title, year := cleanTitle(rawName)
-		norm := normalize(title)
+	maxLen := len(mrulzMetas)
+	if len(einthusanMetas) > maxLen {
+		maxLen = len(einthusanMetas)
+	}
 
-		imdbID := ""
-		matchedTitle := title
-		poster := m.Poster // preserve MovieRulz weserv webp poster!
+	for i := 0; i < maxLen && len(items) < maxItems; i++ {
+		// 1. MovieRulz item at index i
+		if i < len(mrulzMetas) && len(items) < maxItems {
+			m := mrulzMetas[i]
+			rawName := m.Name
+			title, year := cleanTitle(rawName)
+			norm := normalize(title)
 
-		if eMatch, ok := eMap[norm]; ok {
-			imdbID = eMatch.ID
-			matchedTitle = eMatch.Name
-			if poster == "" {
-				poster = eMatch.Poster
-			}
-		} else {
-			id, cPoster := searchCinemeta(ctx, client, "movie", title)
-			if strings.HasPrefix(id, "tt") {
-				imdbID = id
+			imdbID := ""
+			matchedTitle := title
+			poster := m.Poster // preserve MovieRulz weserv webp poster!
+
+			if eMatch, ok := eMap[norm]; ok {
+				imdbID = eMatch.ID
+				matchedTitle = eMatch.Name
 				if poster == "" {
-					poster = cPoster
+					poster = eMatch.Poster
+				}
+			} else {
+				id, cPoster := searchCinemeta(ctx, client, "movie", title)
+				if strings.HasPrefix(id, "tt") {
+					imdbID = id
+					if poster == "" {
+						poster = cPoster
+					}
+				}
+			}
+
+			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
+				seenIDs[imdbID] = true
+				seenNorms[norm] = true
+				if poster == "" {
+					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
+				}
+				items = append(items, catalog.Item{
+					ID:     imdbID,
+					Type:   "movie",
+					Title:  matchedTitle,
+					Year:   year,
+					Poster: poster,
+				})
+			}
+		}
+
+		// 2. Einthusan item at index i
+		if i < len(einthusanMetas) && len(items) < maxItems {
+			e := einthusanMetas[i]
+			if strings.HasPrefix(e.ID, "tt") {
+				norm := normalize(e.Name)
+				if !seenIDs[e.ID] && !seenNorms[norm] {
+					seenIDs[e.ID] = true
+					seenNorms[norm] = true
+					poster := e.Poster
+					if poster == "" {
+						poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", e.ID)
+					}
+					items = append(items, catalog.Item{
+						ID:     e.ID,
+						Type:   "movie",
+						Title:  e.Name,
+						Poster: poster,
+					})
 				}
 			}
 		}
-
-		if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
-			seenIDs[imdbID] = true
-			seenNorms[norm] = true
-			if poster == "" {
-				poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
-			}
-			items = append(items, catalog.Item{
-				ID:     imdbID,
-				Type:   "movie",
-				Title:  matchedTitle,
-				Year:   year,
-				Poster: poster,
-			})
-			if len(items) >= maxItems {
-				break
-			}
-		}
-	}
-
-	// 2. Append Einthusan
-	for _, e := range einthusanMetas {
-		if len(items) >= maxItems {
-			break
-		}
-		if !strings.HasPrefix(e.ID, "tt") {
-			continue
-		}
-		norm := normalize(e.Name)
-		if seenIDs[e.ID] || seenNorms[norm] {
-			continue
-		}
-		seenIDs[e.ID] = true
-		seenNorms[norm] = true
-		poster := e.Poster
-		if poster == "" {
-			poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", e.ID)
-		}
-		items = append(items, catalog.Item{
-			ID:     e.ID,
-			Type:   "movie",
-			Title:  e.Name,
-			Poster: poster,
-		})
 	}
 
 	return items
@@ -185,75 +186,74 @@ func buildSeriesUnion(ctx context.Context, client *http.Client, mfCat, bbCat str
 	seenIDs := make(map[string]bool)
 	seenNorms := make(map[string]bool)
 
-	// 1. MediaFusion first
-	for _, m := range mfMetas {
-		norm := normalize(m.Name)
-		imdbID := m.ID
-		poster := m.Poster
-
-		if !strings.HasPrefix(imdbID, "tt") {
-			id, cPoster := searchCinemeta(ctx, client, "series", m.Name)
-			if strings.HasPrefix(id, "tt") {
-				imdbID = id
-				if poster == "" {
-					poster = cPoster
-				}
-			} else {
-				continue
-			}
-		}
-
-		if !seenIDs[imdbID] && !seenNorms[norm] {
-			seenIDs[imdbID] = true
-			seenNorms[norm] = true
-			if poster == "" {
-				poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
-			}
-			items = append(items, catalog.Item{
-				ID:     imdbID,
-				Type:   "series",
-				Title:  m.Name,
-				Poster: poster,
-			})
-			if len(items) >= maxItems {
-				break
-			}
-		}
+	maxLen := len(bbMetas)
+	if len(mfMetas) > maxLen {
+		maxLen = len(mfMetas)
 	}
 
-	// 2. Bharat Binge next
-	for _, b := range bbMetas {
-		if len(items) >= maxItems {
-			break
-		}
-		norm := normalize(b.Name)
-		imdbID := b.ID
-		poster := b.Poster
+	for i := 0; i < maxLen && len(items) < maxItems; i++ {
+		// 1. Bharat Binge first (real regional Indian web series & serials)
+		if i < len(bbMetas) && len(items) < maxItems {
+			b := bbMetas[i]
+			norm := normalize(b.Name)
+			imdbID := b.ID
+			poster := b.Poster
 
-		if !strings.HasPrefix(imdbID, "tt") {
-			id, cPoster := searchCinemeta(ctx, client, "series", b.Name)
-			if strings.HasPrefix(id, "tt") {
-				imdbID = id
-				if poster == "" {
-					poster = cPoster
+			if !strings.HasPrefix(imdbID, "tt") {
+				id, cPoster := searchCinemeta(ctx, client, "series", b.Name)
+				if strings.HasPrefix(id, "tt") {
+					imdbID = id
+					if poster == "" {
+						poster = cPoster
+					}
 				}
-			} else {
-				continue
+			}
+
+			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
+				seenIDs[imdbID] = true
+				seenNorms[norm] = true
+				if poster == "" {
+					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
+				}
+				items = append(items, catalog.Item{
+					ID:     imdbID,
+					Type:   "series",
+					Title:  b.Name,
+					Poster: poster,
+				})
 			}
 		}
 
-		if !seenIDs[imdbID] && !seenNorms[norm] {
-			seenIDs[imdbID] = true
-			seenNorms[norm] = true
-			if poster == "" {
-				poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
+		// 2. MediaFusion item at index i (Torbox-cached series)
+		if i < len(mfMetas) && len(items) < maxItems {
+			m := mfMetas[i]
+			norm := normalize(m.Name)
+			imdbID := m.ID
+			poster := m.Poster
+
+			if !strings.HasPrefix(imdbID, "tt") {
+				id, cPoster := searchCinemeta(ctx, client, "series", m.Name)
+				if strings.HasPrefix(id, "tt") {
+					imdbID = id
+					if poster == "" {
+						poster = cPoster
+					}
+				}
 			}
-			items = append(items, catalog.Item{
-				ID:     imdbID,
-				Type:   "series",
-				Title:  b.Name,
-				Poster: poster,
-			})
+
+			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
+				seenIDs[imdbID] = true
+				seenNorms[norm] = true
+				if poster == "" {
+					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
+				}
+				items = append(items, catalog.Item{
+					ID:     imdbID,
+					Type:   "series",
+					Title:  m.Name,
+					Poster: poster,
+				})
+			}
 		}
 	}
 
