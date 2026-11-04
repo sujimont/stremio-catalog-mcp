@@ -27,7 +27,12 @@ var (
 	ratingPrefixRegex = regexp.MustCompile(`^★\s*[\d\.]+\s*\|\s*`)
 	yearRegex         = regexp.MustCompile(`^(.*?)\s*\((\d{4})\)`)
 	alphaNumRegex     = regexp.MustCompile(`[^a-z0-9]`)
+	dubbedRegex       = regexp.MustCompile(`(?i)\b(dubbed|dual\s*audio|multi\s*audio|hollywood)\b`)
 )
+
+func isForeignDub(s string) bool {
+	return dubbedRegex.MatchString(s)
+}
 
 type stremioMeta struct {
 	ID          string `json:"id"`
@@ -114,7 +119,13 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 		if i < len(mrulzMetas) && len(items) < maxItems {
 			m := mrulzMetas[i]
 			rawName := m.Name
+			if isForeignDub(rawName) {
+				continue
+			}
 			title, year := cleanTitle(rawName)
+			if isForeignDub(title) {
+				continue
+			}
 			norm := normalize(title)
 
 			imdbID := ""
@@ -179,20 +190,23 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 	return items
 }
 
-func buildSeriesUnion(mfMetas, bbMetas []stremioMeta, maxItems int) []catalog.Item {
+func buildSeriesUnion(recentMetas, topRatedMetas []stremioMeta, maxItems int) []catalog.Item {
 	items := make([]catalog.Item, 0, maxItems)
 	seenIDs := make(map[string]bool)
 	seenNorms := make(map[string]bool)
 
-	maxLen := len(bbMetas)
-	if len(mfMetas) > maxLen {
-		maxLen = len(mfMetas)
+	maxLen := len(recentMetas)
+	if len(topRatedMetas) > maxLen {
+		maxLen = len(topRatedMetas)
 	}
 
 	for i := 0; i < maxLen && len(items) < maxItems; i++ {
-		// 1. Bharat Binge first (real regional Indian web series & serials)
-		if i < len(bbMetas) && len(items) < maxItems {
-			b := bbMetas[i]
+		// 1. New releases from Bharat Binge (recent regional serials)
+		if i < len(recentMetas) && len(items) < maxItems {
+			b := recentMetas[i]
+			if isForeignDub(b.Name) {
+				continue
+			}
 			norm := normalize(b.Name)
 			imdbID := b.ID
 			poster := b.Poster
@@ -212,12 +226,15 @@ func buildSeriesUnion(mfMetas, bbMetas []stremioMeta, maxItems int) []catalog.It
 			}
 		}
 
-		// 2. MediaFusion item at index i (Torbox-cached series)
-		if i < len(mfMetas) && len(items) < maxItems {
-			m := mfMetas[i]
-			norm := normalize(m.Name)
-			imdbID := m.ID
-			poster := m.Poster
+		// 2. Top-rated regional Indian serials & shows from Bharat Binge
+		if i < len(topRatedMetas) && len(items) < maxItems {
+			t := topRatedMetas[i]
+			if isForeignDub(t.Name) {
+				continue
+			}
+			norm := normalize(t.Name)
+			imdbID := t.ID
+			poster := t.Poster
 
 			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
 				seenIDs[imdbID] = true
@@ -228,7 +245,7 @@ func buildSeriesUnion(mfMetas, bbMetas []stremioMeta, maxItems int) []catalog.It
 				items = append(items, catalog.Item{
 					ID:     imdbID,
 					Type:   "series",
-					Title:  m.Name,
+					Title:  t.Name,
 					Poster: poster,
 				})
 			}
@@ -245,8 +262,9 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 	var (
 		mrulzTa, mrulzMl, mrulzHi []stremioMeta
 		einTa, einMl, einHi       []stremioMeta
-		mfTa, mfMl, mfHi          []stremioMeta
-		bbTa, bbMl, bbHi          []stremioMeta
+		bbTaRecent, bbTaTop       []stremioMeta
+		bbMlRecent, bbMlTop       []stremioMeta
+		bbHiRecent, bbHiTop       []stremioMeta
 		wg                        sync.WaitGroup
 	)
 
@@ -267,13 +285,14 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 	fetchParallel(&einMl, fmt.Sprintf("%s/catalog/movie/malayalam_board.json", EinthusanBase))
 	fetchParallel(&einHi, fmt.Sprintf("%s/catalog/movie/hindi_board.json", EinthusanBase))
 
-	fetchParallel(&mfTa, fmt.Sprintf("%s/catalog/series/tamil_series.json", MediaFusionBase))
-	fetchParallel(&mfMl, fmt.Sprintf("%s/catalog/series/malayalam_series.json", MediaFusionBase))
-	fetchParallel(&mfHi, fmt.Sprintf("%s/catalog/series/hindi_series.json", MediaFusionBase))
+	fetchParallel(&bbTaRecent, fmt.Sprintf("%s/catalog/series/tmdb-ta-recent-series.json", BharatBingeBase))
+	fetchParallel(&bbTaTop, fmt.Sprintf("%s/catalog/series/tmdb-ta-top_rated-series.json", BharatBingeBase))
 
-	fetchParallel(&bbTa, fmt.Sprintf("%s/catalog/series/tmdb-ta-recent-series.json", BharatBingeBase))
-	fetchParallel(&bbMl, fmt.Sprintf("%s/catalog/series/tmdb-ml-recent-series.json", BharatBingeBase))
-	fetchParallel(&bbHi, fmt.Sprintf("%s/catalog/series/tmdb-hi-recent-series.json", BharatBingeBase))
+	fetchParallel(&bbMlRecent, fmt.Sprintf("%s/catalog/series/tmdb-ml-recent-series.json", BharatBingeBase))
+	fetchParallel(&bbMlTop, fmt.Sprintf("%s/catalog/series/tmdb-ml-top_rated-series.json", BharatBingeBase))
+
+	fetchParallel(&bbHiRecent, fmt.Sprintf("%s/catalog/series/tmdb-hi-recent-series.json", BharatBingeBase))
+	fetchParallel(&bbHiTop, fmt.Sprintf("%s/catalog/series/tmdb-hi-top_rated-series.json", BharatBingeBase))
 
 	wg.Wait()
 
@@ -282,10 +301,10 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 	malayalamMovies := buildMovieUnion(ctx, client, mrulzMl, einMl, 100)
 	hindiMovies := buildMovieUnion(ctx, client, mrulzHi, einHi, 100)
 
-	// Build series rows with interleaving
-	tamilSeries := buildSeriesUnion(mfTa, bbTa, 100)
-	malayalamSeries := buildSeriesUnion(mfMl, bbMl, 100)
-	hindiSeries := buildSeriesUnion(mfHi, bbHi, 100)
+	// Build series rows with interleaving (pure Indian recent + top-rated serials)
+	tamilSeries := buildSeriesUnion(bbTaRecent, bbTaTop, 100)
+	malayalamSeries := buildSeriesUnion(bbMlRecent, bbMlTop, 100)
+	hindiSeries := buildSeriesUnion(bbHiRecent, bbHiTop, 100)
 
 	raw, err := store.Load(ctx)
 	if err != nil {
