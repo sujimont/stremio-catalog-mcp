@@ -316,7 +316,7 @@ func buildSeriesUnion(recentMetas, mfMetas, topRatedMetas []stremioMeta, maxItem
 
 // SyncAll refreshes all 6 Indian catalog rows and syncs with Stremio.
 func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAPI, baseURL, feedToken string) error {
-	client := &http.Client{Timeout: 35 * time.Second}
+	client := &http.Client{Timeout: 50 * time.Second}
 
 	// Ping MovieRulz base to wake Render instance from sleep
 	go func() {
