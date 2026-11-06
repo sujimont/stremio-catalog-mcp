@@ -154,6 +154,15 @@ func searchCinemeta(ctx context.Context, client *http.Client, mediaType, title s
 		if len(cand) >= 4 && len(target) >= 4 && (strings.HasPrefix(cand, target) || strings.HasPrefix(target, cand)) {
 			return first.ID, first.Poster
 		}
+		targetWords := strings.Fields(title)
+		candWords := strings.Fields(first.Name)
+		if len(targetWords) > 0 && len(candWords) > 0 {
+			w1 := normalize(targetWords[0])
+			w2 := normalize(candWords[0])
+			if len(w1) >= 4 && w1 == w2 {
+				return first.ID, first.Poster
+			}
+		}
 	}
 	return "", ""
 }
@@ -207,15 +216,10 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 				}
 			}
 
-			// Fallback to MovieRulz ID if Cinemeta didn't have an IMDb ID
-			if imdbID == "" && m.ID != "" {
-				imdbID = m.ID
-			}
-
-			if imdbID != "" && !seenIDs[imdbID] && !seenNorms[norm] {
+			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
 				seenIDs[imdbID] = true
 				seenNorms[norm] = true
-				if poster == "" && strings.HasPrefix(imdbID, "tt") {
+				if poster == "" {
 					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
 				}
 				items = append(items, catalog.Item{
@@ -394,12 +398,14 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 			if row.Name == rowName {
 				out := make([]stremioMeta, 0, len(row.Items))
 				for _, it := range row.Items {
-					out = append(out, stremioMeta{
-						ID:     it.ID,
-						Type:   it.Type,
-						Name:   it.Title,
-						Poster: it.Poster,
-					})
+					if strings.HasPrefix(it.ID, "tt") {
+						out = append(out, stremioMeta{
+							ID:     it.ID,
+							Type:   it.Type,
+							Name:   it.Title,
+							Poster: it.Poster,
+						})
+					}
 				}
 				return out
 			}
