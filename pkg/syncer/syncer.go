@@ -127,11 +127,12 @@ func cleanTitle(title string) (string, int) {
 }
 
 func normalize(s string) string {
+	s = strings.ReplaceAll(s, "&", "and")
 	return alphaNumRegex.ReplaceAllString(strings.ToLower(s), "")
 }
 
 func searchCinemeta(ctx context.Context, client *http.Client, mediaType, title string) (string, string) {
-	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 
 	query := url.PathEscape(title)
@@ -145,6 +146,13 @@ func searchCinemeta(ctx context.Context, client *http.Client, mediaType, title s
 		cand := normalize(m.Name)
 		if cand == target || strings.Contains(cand, target) || strings.Contains(target, cand) {
 			return m.ID, m.Poster
+		}
+	}
+	if len(metas) > 0 {
+		first := metas[0]
+		cand := normalize(first.Name)
+		if len(cand) >= 4 && len(target) >= 4 && (strings.HasPrefix(cand, target) || strings.HasPrefix(target, cand)) {
+			return first.ID, first.Poster
 		}
 	}
 	return "", ""
@@ -199,10 +207,15 @@ func buildMovieUnion(ctx context.Context, client *http.Client, mrulzMetas, einth
 				}
 			}
 
-			if strings.HasPrefix(imdbID, "tt") && !seenIDs[imdbID] && !seenNorms[norm] {
+			// Fallback to MovieRulz ID if Cinemeta didn't have an IMDb ID
+			if imdbID == "" && m.ID != "" {
+				imdbID = m.ID
+			}
+
+			if imdbID != "" && !seenIDs[imdbID] && !seenNorms[norm] {
 				seenIDs[imdbID] = true
 				seenNorms[norm] = true
-				if poster == "" {
+				if poster == "" && strings.HasPrefix(imdbID, "tt") {
 					poster = fmt.Sprintf("https://images.metahub.space/poster/small/%s/img", imdbID)
 				}
 				items = append(items, catalog.Item{
@@ -299,7 +312,18 @@ func buildSeriesUnion(recentMetas, mfMetas, topRatedMetas []stremioMeta, maxItem
 
 // SyncAll refreshes all 6 Indian catalog rows and syncs with Stremio.
 func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAPI, baseURL, feedToken string) error {
-	client := &http.Client{Timeout: 6 * time.Second}
+	client := &http.Client{Timeout: 35 * time.Second}
+
+	// Ping MovieRulz base to wake Render instance from sleep
+	go func() {
+		wakeReq, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://movierulz-stremio.onrender.com/manifest.json", nil)
+		if err == nil {
+			wakeReq.Header.Set("User-Agent", "Mozilla/5.0")
+			if resp, err := client.Do(wakeReq); err == nil {
+				resp.Body.Close()
+			}
+		}
+	}()
 
 	var (
 		mrulzTa, mrulzMl, mrulzHi []stremioMeta
@@ -311,37 +335,87 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 		wg                        sync.WaitGroup
 	)
 
-	fetchParallel := func(target *[]stremioMeta, targetURL string) {
+	fetchWithRetry := func(target *[]stremioMeta, targetURL string, retries int) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			metas, _ := fetchMetas(ctx, client, targetURL)
-			*target = metas
+			for attempt := 0; attempt <= retries; attempt++ {
+				metas, err := fetchMetas(ctx, client, targetURL)
+				if err == nil && len(metas) > 0 {
+					*target = metas
+					return
+				}
+				if attempt < retries {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(1 * time.Second):
+					}
+				}
+			}
 		}()
 	}
 
-	fetchParallel(&mrulzTa, fmt.Sprintf("%s/catalog/movie/mrulz_tamil.json", MovieRulzBase))
-	fetchParallel(&mrulzMl, fmt.Sprintf("%s/catalog/movie/mrulz_malayalam.json", MovieRulzBase))
-	fetchParallel(&mrulzHi, fmt.Sprintf("%s/catalog/movie/mrulz_hindi.json", MovieRulzBase))
+	fetchWithRetry(&mrulzTa, fmt.Sprintf("%s/catalog/movie/mrulz_tamil.json", MovieRulzBase), 1)
+	fetchWithRetry(&mrulzMl, fmt.Sprintf("%s/catalog/movie/mrulz_malayalam.json", MovieRulzBase), 1)
+	fetchWithRetry(&mrulzHi, fmt.Sprintf("%s/catalog/movie/mrulz_hindi.json", MovieRulzBase), 1)
 
-	fetchParallel(&einTa, fmt.Sprintf("%s/catalog/movie/tamil_board.json", EinthusanBase))
-	fetchParallel(&einMl, fmt.Sprintf("%s/catalog/movie/malayalam_board.json", EinthusanBase))
-	fetchParallel(&einHi, fmt.Sprintf("%s/catalog/movie/hindi_board.json", EinthusanBase))
+	fetchWithRetry(&einTa, fmt.Sprintf("%s/catalog/movie/tamil_board.json", EinthusanBase), 0)
+	fetchWithRetry(&einMl, fmt.Sprintf("%s/catalog/movie/malayalam_board.json", EinthusanBase), 0)
+	fetchWithRetry(&einHi, fmt.Sprintf("%s/catalog/movie/hindi_board.json", EinthusanBase), 0)
 
-	fetchParallel(&bbTaRecent, fmt.Sprintf("%s/catalog/series/tmdb-ta-recent-series.json", BharatBingeBase))
-	fetchParallel(&bbTaTop, fmt.Sprintf("%s/catalog/series/tmdb-ta-top_rated-series.json", BharatBingeBase))
+	fetchWithRetry(&bbTaRecent, fmt.Sprintf("%s/catalog/series/tmdb-ta-recent-series.json", BharatBingeBase), 0)
+	fetchWithRetry(&bbTaTop, fmt.Sprintf("%s/catalog/series/tmdb-ta-top_rated-series.json", BharatBingeBase), 0)
 
-	fetchParallel(&bbMlRecent, fmt.Sprintf("%s/catalog/series/tmdb-ml-recent-series.json", BharatBingeBase))
-	fetchParallel(&bbMlTop, fmt.Sprintf("%s/catalog/series/tmdb-ml-top_rated-series.json", BharatBingeBase))
+	fetchWithRetry(&bbMlRecent, fmt.Sprintf("%s/catalog/series/tmdb-ml-recent-series.json", BharatBingeBase), 0)
+	fetchWithRetry(&bbMlTop, fmt.Sprintf("%s/catalog/series/tmdb-ml-top_rated-series.json", BharatBingeBase), 0)
 
-	fetchParallel(&bbHiRecent, fmt.Sprintf("%s/catalog/series/tmdb-hi-recent-series.json", BharatBingeBase))
-	fetchParallel(&bbHiTop, fmt.Sprintf("%s/catalog/series/tmdb-hi-top_rated-series.json", BharatBingeBase))
+	fetchWithRetry(&bbHiRecent, fmt.Sprintf("%s/catalog/series/tmdb-hi-recent-series.json", BharatBingeBase), 0)
+	fetchWithRetry(&bbHiTop, fmt.Sprintf("%s/catalog/series/tmdb-hi-top_rated-series.json", BharatBingeBase), 0)
 
-	fetchParallel(&mfTa, fmt.Sprintf("%s/catalog/series/tamil_series.json", MediaFusionBase))
-	fetchParallel(&mfMl, fmt.Sprintf("%s/catalog/series/malayalam_series.json", MediaFusionBase))
-	fetchParallel(&mfHi, fmt.Sprintf("%s/catalog/series/hindi_series.json", MediaFusionBase))
+	fetchWithRetry(&mfTa, fmt.Sprintf("%s/catalog/series/tamil_series.json", MediaFusionBase), 0)
+	fetchWithRetry(&mfMl, fmt.Sprintf("%s/catalog/series/malayalam_series.json", MediaFusionBase), 0)
+	fetchWithRetry(&mfHi, fmt.Sprintf("%s/catalog/series/hindi_series.json", MediaFusionBase), 0)
 
 	wg.Wait()
+
+	raw, err := store.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("loading state: %w", err)
+	}
+	state, err := catalog.ParseState(raw)
+	if err != nil {
+		return fmt.Errorf("parsing state: %w", err)
+	}
+
+	// Safeguard: If MovieRulz failed to respond, salvage previously cached MovieRulz items from state
+	salvagePreviousMrulz := func(rowName string) []stremioMeta {
+		for _, row := range state.Rows {
+			if row.Name == rowName {
+				out := make([]stremioMeta, 0, len(row.Items))
+				for _, it := range row.Items {
+					out = append(out, stremioMeta{
+						ID:     it.ID,
+						Type:   it.Type,
+						Name:   it.Title,
+						Poster: it.Poster,
+					})
+				}
+				return out
+			}
+		}
+		return nil
+	}
+
+	if len(mrulzTa) == 0 {
+		mrulzTa = salvagePreviousMrulz("Latest Tamil")
+	}
+	if len(mrulzMl) == 0 {
+		mrulzMl = salvagePreviousMrulz("Latest Malayalam")
+	}
+	if len(mrulzHi) == 0 {
+		mrulzHi = salvagePreviousMrulz("Latest Hindi")
+	}
 
 	// Build movie rows with interleaving
 	tamilMovies := buildMovieUnion(ctx, client, mrulzTa, einTa, 100)
@@ -352,15 +426,6 @@ func SyncAll(ctx context.Context, store catalog.Store, account stremio.AccountAP
 	tamilSeries := buildSeriesUnion(bbTaRecent, mfTa, bbTaTop, 100)
 	malayalamSeries := buildSeriesUnion(bbMlRecent, mfMl, bbMlTop, 100)
 	hindiSeries := buildSeriesUnion(bbHiRecent, mfHi, bbHiTop, 100)
-
-	raw, err := store.Load(ctx)
-	if err != nil {
-		return fmt.Errorf("loading state: %w", err)
-	}
-	state, err := catalog.ParseState(raw)
-	if err != nil {
-		return fmt.Errorf("parsing state: %w", err)
-	}
 
 	rowMapping := map[string][]catalog.Item{
 		"Latest Tamil":            tamilMovies,
